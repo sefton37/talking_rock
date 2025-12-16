@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reos"
+version = "0.0.0a0"
+description = "Local-first attention kernel scaffold"
+authors = [{ name = "ReOS" }]
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0,<1.0.0",
+  "httpx>=0.27.0,<1.0.0",
+  "uvicorn[standard]>=0.30.0,<0.32.0",
+  "pydantic>=2.8.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6.0,<0.8.0",
+  "mypy>=1.11.0,<1.13.0",
+  "pytest>=8.3.0,<9.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+strict_equality = true
+mypy_path = ["src"]
+
+[tool.mypy-uvicorn]
+ignore_missing_imports = true
+
+[tool.mypy-fastapi]
+ignore_missing_imports = true
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
