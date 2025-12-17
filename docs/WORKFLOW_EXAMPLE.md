@@ -567,6 +567,75 @@ When the human says "This was intentional exploration," ReOS remembers. Next sim
 
 ---
 
+## The Second Loop: Roadmap/Charter Alignment (Project-Aware Guidance)
+
+Fragmentation/coherence is only one dimension. ReOS also needs to be **project-aware**:
+it should notice when your work is drifting away from the current roadmap thread, when changes
+touch files that aren’t grounded in the roadmap/charter, or when a previously coherent thread
+is being orphaned.
+
+This loop stays **local-first** and **transparent**.
+
+### What’s Different Here?
+
+- **Input signal** is not just file switching; it’s **code change shape** (git status + diffstat) and
+  **where those changes land** in the repo.
+- ReOS compares changed files to the roadmap and charter as *anchors*.
+- Output is questions like: “Is this intentional exploration?” not enforcement.
+
+### Example: Drift Detection Through Git + Roadmap
+
+**Human action**: makes uncommitted changes across multiple files.
+
+**ReOS action** (via `review_alignment`):
+
+1. Infer the active repo from VSCode events (`workspaceFolder`).
+2. Read git working tree metadata:
+   - `git status --porcelain` → which files changed
+   - `git diff --stat` → shape of change
+3. Read roadmap and charter:
+   - `docs/tech-roadmap.md`
+   - `ReOS_charter.md`
+4. Extract any file-path anchors mentioned in those docs.
+5. Compare:
+   - changed files that are *not* referenced → possible drift / new surface area
+   - changed files that *are* referenced → likely on-thread
+6. Offer reflective questions.
+
+**Example output** (metadata-only):
+```json
+{
+  "repo": {
+    "branch": "main",
+    "changed_files": [
+      "src/reos/gui/main_window.py",
+      "src/reos/some_new_module.py"
+    ],
+    "diff_stat": "2 files changed, 40 insertions(+)"
+  },
+  "alignment": {
+    "unmapped_changed_files": ["src/reos/some_new_module.py"],
+    "recent_active_files": ["file:///.../main_window.py", "file:///.../some_new_module.py"]
+  },
+  "questions": [
+    "Some changed files aren't referenced in the roadmap/charter. Is this intentional exploration, or are we drifting from stated milestones?"
+  ]
+}
+```
+
+### Why This Matters
+
+This is how ReOS helps with what you described:
+
+- **Going too far ahead**: new modules/files not grounded in current roadmap anchors.
+- **Undefined work**: changes that don’t map to any described milestone or charter constraint.
+- **Orphaning a thread**: rapid movement into new areas while leaving a previously coherent thread without closure.
+
+ReOS can’t decide what matters for you — but it can notice when your work’s center of gravity
+is moving away from your stated intent and ask: “Was that move chosen?”
+
+---
+
 ## Why This Design?
 
 **Problem**: Productivity tools interrupt. They guilt. They optimize for tools, not humans.

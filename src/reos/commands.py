@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .alignment import analyze_alignment
 from .attention import classify_attention_pattern, get_current_session_summary
 from .db import Database
 
@@ -79,6 +80,27 @@ def get_command_registry() -> list[Command]:
                 "type": "object",
                 "properties": {"text": {"type": "string", "description": "Your reflection"}},
                 "required": ["text"],
+            },
+        ),
+        Command(
+            name="review_alignment",
+            description=(
+                "Review how your current code changes relate to the project roadmap and charter. "
+                "Uses git metadata (changed files + diffstat) and compares to docs/tech-roadmap.md "
+                "and ReOS_charter.md. Default is metadata-only; optionally include diffs "
+                "(local-only)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "include_diff": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, include full `git diff` text in the output (local-only). "
+                            "Default false."
+                        ),
+                    }
+                },
             },
         ),
     ]
@@ -162,6 +184,17 @@ def handle_note(params: dict[str, Any]) -> str:
         return f"Note stored: {text}"
     except Exception as e:
         return f"Error storing note: {e}"
+
+
+def handle_review_alignment(params: dict[str, Any]) -> str:
+    """Review current repo changes against roadmap + charter."""
+    try:
+        include_diff = bool(params.get("include_diff", False))
+        db = Database()
+        report = analyze_alignment(db=db, include_diff=include_diff)
+        return json.dumps(report, indent=2)
+    except Exception as e:
+        return f"Error reviewing alignment: {e}"
 
 
 def registry_as_json_schema() -> dict[str, Any]:
