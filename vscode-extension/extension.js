@@ -154,6 +154,31 @@ function updateStatusBar(statusBar) {
 }
 
 /**
+ * Get git branch and commit info for the workspace.
+ */
+async function getGitInfo() {
+  try {
+    const folders = vscode.workspace.workspaceFolders || [];
+    const gitInfo = {};
+    for (const folder of folders) {
+      const git = vscode.extensions.getExtension('vscode.git')?.exports.getAPI(1);
+      if (git) {
+        const repo = git.getRepository(folder.uri);
+        if (repo) {
+          gitInfo[folder.uri.fsPath] = {
+            branch: repo.state.HEAD?.name || 'unknown',
+            commit: repo.state.HEAD?.commit || null,
+          };
+        }
+      }
+    }
+    return gitInfo;
+  } catch {
+    return {};
+  }
+}
+
+/**
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
@@ -161,6 +186,9 @@ function activate(context) {
 
   let panel = null;
   let buffer = new EventBuffer(getConfig().maxEventsInPanel);
+  let activeEditor = null;
+  let lastEditorChangeTime = Date.now();
+  let fileEventHistory = []; // Track file switches for fragmentation detection
 
   function refreshBufferLimit() {
     const cfg = getConfig();
@@ -346,10 +374,31 @@ function activate(context) {
     vscode.window.onDidChangeActiveTextEditor(async (editor) => {
       if (!editor || !editor.document) return;
       const doc = editor.document;
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(doc.uri);
+      const folderPath = workspaceFolder?.uri?.fsPath || null;
+
+      // Track file switch timing for fragmentation detection
+      const now = Date.now();
+      fileEventHistory.push({
+        timestamp: now,
+        uri: String(doc.uri),
+        folder: folderPath,
+      });
+      // Keep last 1000 events (roughly 10-20 minutes of switching data)
+      if (fileEventHistory.length > 1000) {
+        fileEventHistory.shift();
+      }
+      lastEditorChangeTime = now;
+
+      // Extract project name from folder path
+      const projectName = folderPath ? folderPath.split('/').pop() : 'unknown';
+
       const observed = await sendEvent(output, 'active_editor', {
         uri: String(doc.uri),
         languageId: doc.languageId,
-        workspaceFolder: vscode.workspace.getWorkspaceFolder(doc.uri)?.uri?.fsPath || null,
+        workspaceFolder: folderPath,
+        projectName,
+        editorChangeTime: nowIso(),
       });
       buffer.push(observed);
       postToPanel();
@@ -368,7 +417,37 @@ function activate(context) {
     })
   );
 
-  output.appendLine('[reos] extension activated');
+  // Periodic heartbeat: track time spent in current editor (every 10 seconds)
+  // This allows ReOS to calculate time-in-file and detect extended focus/dwelling
+  const heartbeatInterval = setInterval(async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || !editor.document) return;
+
+    const now = Date.now();
+    const timeInFile = Math.round((now - lastEditorChangeTime) / 1000); // seconds
+
+    const doc = editor.document;
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(doc.uri);
+    const folderPath = workspaceFolder?.uri?.fsPath || null;
+    const projectName = folderPath ? folderPath.split('/').pop() : 'unknown';
+
+    const observed = await sendEvent(output, 'heartbeat', {
+      uri: String(doc.uri),
+      languageId: doc.languageId,
+      workspaceFolder: folderPath,
+      projectName,
+      timeInFileSeconds: timeInFile,
+      fileHistoryCount: fileEventHistory.length,
+    });
+    buffer.push(observed);
+    postToPanel();
+  }, 10000); // Every 10 seconds
+
+  context.subscriptions.push({
+    dispose: () => clearInterval(heartbeatInterval),
+  });
+
+  output.appendLine('[reos] extension activated with real-time event streaming');
 }
 
 function deactivate() {}

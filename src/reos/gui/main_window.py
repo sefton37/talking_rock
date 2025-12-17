@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QPushButton,
     QSplitter,
@@ -15,6 +16,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ..attention import get_current_session_summary
+from ..db import Database
 
 
 class MainWindow(QMainWindow):
@@ -47,28 +51,98 @@ class MainWindow(QMainWindow):
         # Default proportions: nav (15%), chat (50%), inspection (35%)
         main_split.setSizes([288, 960, 672])
         layout.addWidget(main_split)
+        
+        # Refresh nav pane every 30 seconds to show current VSCode activity
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self._refresh_nav_pane)
+        self.refresh_timer.start(30000)  # 30 second refresh
 
     def _create_nav_pane(self) -> QWidget:
-        """Left navigation pane."""
+        """Left navigation pane: shows VSCode projects and attention metrics."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        title = QLabel("Navigation")
+        title = QLabel("VSCode Projects")
         title.setStyleSheet(
             "font-weight: bold; font-size: 14px;"
         )
         layout.addWidget(title)
 
-        # Placeholder list
+        # Session summary from SQLite
         self.nav_list = QListWidget()
-        self.nav_list.addItem("Recent Sessions")
-        self.nav_list.addItem("Events Log")
-        self.nav_list.addItem("Reflections")
-        self.nav_list.addItem("Settings")
+        self.nav_list.itemClicked.connect(self._on_nav_item_clicked)
         layout.addWidget(self.nav_list)
+        
+        # Refresh nav pane with current session data
+        self._refresh_nav_pane()
 
         layout.addStretch()
         return widget
+    
+    def _refresh_nav_pane(self) -> None:
+        """Refresh navigation pane with current VSCode project data."""
+        try:
+            db = Database()
+            summary = get_current_session_summary(db)
+            
+            # Clear current list
+            self.nav_list.clear()
+            
+            # Show status
+            status_text = summary.get("status", "no_activity")
+            if status_text == "no_activity":
+                item = QListWidgetItem("No active VSCode session")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                self.nav_list.addItem(item)
+                return
+            
+            # Add fragmentation metric at top
+            frag = summary.get("fragmentation", {})
+            frag_score = frag.get("score", 0.0)
+            
+            frag_item = QListWidgetItem(f"Fragmentation: {frag_score:.1%}")
+            frag_item.setFlags(frag_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.nav_list.addItem(frag_item)
+            
+            # Add each project as a clickable item
+            projects = summary.get("projects", [])
+            
+            if not projects:
+                item = QListWidgetItem("No file activity yet")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                self.nav_list.addItem(item)
+                return
+            
+            for project in projects:
+                name = project.get("name", "unknown")
+                file_count = project.get("file_count", 0)
+                duration = project.get("estimated_duration_seconds", 0)
+                
+                file_plural = "s" if file_count != 1 else ""
+                display_text = (
+                    f"{name}: {file_count} file{file_plural}, {int(duration // 60)}m"
+                )
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.ItemDataRole.UserRole, name)  # Store project name
+                self.nav_list.addItem(item)
+                
+        except Exception as e:
+            item = QListWidgetItem(f"Error loading projects: {e}")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.nav_list.clear()
+            self.nav_list.addItem(item)
+    
+    def _on_nav_item_clicked(self, item: QListWidgetItem) -> None:
+        """Handle navigation item click: load project context."""
+        project_name = item.data(Qt.ItemDataRole.UserRole)
+        if not project_name:
+            return
+        
+        # In center pane, show: "Loaded project: {project_name}"
+        # This is a placeholder for future implementation
+        msg = f"Project context for: {project_name}\n(Project inspection coming next)"
+        self.chat_display.append(f"\nReOS: {msg}")
+
 
     def _create_chat_pane(self) -> QWidget:
         """Center chat pane."""
