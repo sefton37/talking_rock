@@ -1,8 +1,15 @@
-# ReOS Workflow Example: VSCode Extension ↔ ReOS Companion
+# ReOS Workflow Example: Git Repo ↔ ReOS Companion
 
 ## Conceptual Overview
 
-This document walks through a **real-world example** of how the VSCode extension bridges to ReOS, showing exactly what data flows between systems and how the human is positioned at the center of the interaction loop.
+ReOS is a companion to a **Git repository**, not a VS Code extension.
+
+It observes repo state locally (working tree + commits) and quietly evaluates two plan-anchored questions in the background:
+
+1. **Drift**: Do the current changes still map to the charter + tech roadmap?
+2. **Threads**: Are we opening too many parallel threads at once (breadth/scope of changes)?
+
+By default, ReOS is **metadata-first** (status/diffstat/numstat). Including diff text for deeper LLM review is an explicit opt-in.
 
 ---
 
@@ -14,649 +21,97 @@ This document walks through a **real-world example** of how the VSCode extension
 │                       (Primary Agency)                              │
 └──────────────────────┬──────────────────────────────────────────────┘
                        │
-         ┌─────────────┴──────────────┐
-         │                            │
-         ▼                            ▼
-    VSCode              ←→        ReOS GUI
-  (Workspace)         (Extension)    (Companion)
-    Active             Observes     Reflects
-    Editor             & Tracks     & Prompts
-         │                            │
-         └─────────────┬──────────────┘
+                       ▼
+                 Developer edits
+               (any editor/IDE)
                        │
-         ┌─────────────┴──────────────┐
-         │                            │
-         ▼                            ▼
-   SQLite Store             User Reflection
-   (Events Table)          (Intention Choice)
-                                │
-                                ▼
-                          SQLite audit_log
-                        (Learning Store)
+                       ▼
+                 Git working tree
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                               ReOS                                  │
+│  Polls repo → stores events → triggers checkpoints (gentle, throttled)│
+└──────────────────────┬──────────────────────────────────────────────┘
+                       │
+                       ▼
+                    SQLite
+              (events + audit_log)
+                       │
+                       ▼
+                Reflection + choice
+       (run alignment review / note intention)
 ```
 
-**Key Principle**: The human is not a passive consumer. The human is the agent making intentional choices. ReOS and VSCode are tools that help the human see their attention patterns and decide.
+ReOS does not infer “distracted” from telemetry. It stays anchored to:
+
+- the charter (values)
+- the tech roadmap (plan)
+- the observed code changes (git)
 
 ---
 
 ## Concrete Example Scenario
 
-**Time**: 2:00 PM - 2:15 PM
-**Human Activity**: Working on a backend API, then switching to frontend, then checking a bug in backend
+**Time**: 2:00 PM – 2:20 PM
 
-### **Phase 1: Human Starts Coding in VSCode** (2:00 PM)
+### Phase 1: Work begins (repo changes accumulate)
 
-**What the human does:**
-```
-1. Opens VSCode
-2. VSCode extension activates silently
-3. Human opens file: backend/src/main.py
-4. Human starts editing (adds route handler)
-```
+ReOS runs locally and periodically polls:
 
-**What the VSCode Extension captures:**
+- `git status --porcelain`
+- `git diff --stat`
+- `git diff --numstat`
 
-When `onDidChangeActiveTextEditor` fires (human opens `main.py`):
+It stores a metadata-only snapshot event:
+
 ```json
 {
-  "kind": "active_editor",
-  "source": "vscode-extension",
-  "timestamp": "2024-12-17T14:00:15Z",
-  "projectName": "backend",
-  "uri": "file:///dev/backend/src/main.py",
-  "languageId": "python",
-  "workspaceFolder": "/dev/backend",
-  "editorChangeTime": "2024-12-17T14:00:15Z"
-}
-```
-
-**What gets stored in SQLite:**
-```sql
-INSERT INTO events (
-  id, source, kind, ts, payload_metadata, created_at, ingested_at
-) VALUES (
-  'evt-001',
-  'vscode-extension',
-  'active_editor',
-  '2024-12-17T14:00:15Z',
-  '{"uri":"file:///dev/backend/src/main.py","projectName":"backend",...}',
-  '2024-12-17T14:00:15Z',
-  '2024-12-17T14:00:15Z'
-);
-```
-
-**ReOS is silent.** No interruption. Just observing.
-
----
-
-### **Phase 2: Every 10 Seconds, Extension Publishes Heartbeat**
-
-**At 2:00:25 PM** (10 seconds after file open):
-
-The extension publishes a heartbeat event:
-```json
-{
-  "kind": "heartbeat",
-  "source": "vscode-extension",
-  "timestamp": "2024-12-17T14:00:25Z",
-  "projectName": "backend",
-  "uri": "file:///dev/backend/src/main.py",
-  "timeInFileSeconds": 10,
-  "fileHistoryCount": 1,
-  "editorChangeTime": "2024-12-17T14:00:15Z"
-}
-```
-
-**Stored in SQLite**: Same pattern, `kind: "heartbeat"`
-
-**Why heartbeat?** It tells ReOS: "The human is still in this file. 10 seconds have elapsed. They're in the zone."
-
-**At 2:00:35 PM** (10 more seconds):
-```json
-{
-  "timeInFileSeconds": 20,
-  ...
-}
-```
-
----
-
-### **Phase 3: Human Switches to Frontend** (2:03 PM)
-
-**What the human does:**
-```
-1. Click on sidebar to open frontend project
-2. Open file: frontend/src/components/Button.tsx
-3. Start editing component
-```
-
-**What the Extension captures:**
-
-`onDidChangeActiveTextEditor` fires again:
-```json
-{
-  "kind": "active_editor",
-  "source": "vscode-extension",
-  "timestamp": "2024-12-17T14:03:00Z",
-  "projectName": "frontend",
-  "uri": "file:///dev/frontend/src/components/Button.tsx",
-  "languageId": "typescript",
-  "workspaceFolder": "/dev/frontend",
-  "editorChangeTime": "2024-12-17T14:03:00Z"
-}
-```
-
-**Extension also tracks in fileEventHistory:**
-```javascript
-fileEventHistory = [
-  {timestamp: 14:00:15, uri: "backend/src/main.py"},
-  {timestamp: 14:03:00, uri: "frontend/src/components/Button.tsx"}
-]
-```
-
-**Stored in SQLite**: New row with `projectName: "frontend"`
-
----
-
-### **Phase 4: ReOS Nav Pane Auto-Refreshes** (2:03:30 PM)
-
-**Timer fires**: Every 30 seconds, nav pane refresh triggers.
-
-**ReOS calls** `get_current_session_summary(db)`:
-
-1. Queries SQLite for last 100 events
-2. Extracts:
-   ```
-   Events in last 3.5 minutes:
-   - backend/main.py: 180 seconds (3 min)
-   - frontend/Button.tsx: 30 seconds
-   ```
-
-3. Calls `calculate_fragmentation()` on last 5 minutes:
-   ```
-   - 2 file switches detected
-   - 2 unique files
-   - Switch threshold: 8
-   - Score: (2 switches / 8 threshold) = 0.25
-   - Explanation: "Coherent focus: 2 switches across 2 files."
-   ```
-
-**ReOS Nav Pane displays:**
-```
-┌────────────────────────────────────┐
-│ VSCode Projects                    │
-├────────────────────────────────────┤
-│ Fragmentation: 25%                 │
-│                                    │
-│ ✓ backend: 1 file, 3m              │
-│ ✓ frontend: 1 file, 0m             │
-└────────────────────────────────────┘
-```
-
-**The human sees this** but ReOS doesn't interrupt. It's just information available.
-
----
-
-### **Phase 5: Rapid Switching Occurs** (2:05-2:10 PM)
-
-**What the human does:**
-```
-2:05:00 → Switch to backend/utils.py
-2:05:30 → Switch to backend/models.py
-2:06:00 → Switch to frontend/App.tsx
-2:06:30 → Switch to backend/config.py
-2:07:00 → Switch to backend/main.py (again)
-2:07:30 → Switch to frontend/index.tsx
-2:08:00 → Switch to backend/utils.py (again)
-2:08:30 → Switch to frontend/Button.tsx (again)
-```
-
-**Extension tracks all 8 switches in fileEventHistory**
-
-**8 new active_editor events stored in SQLite**
-
-**At 2:08:30 PM**, nav pane refreshes:
-
-**ReOS calls** `calculate_fragmentation()` on last 5 minutes:
-```
-- 8 file switches detected
-- 4 unique files
-- Switch threshold: 8
-- Score: 8/8 = 1.0 (fully fragmented)
-- Explanation: "Fragmented attention: 8 switches across 4 files in 300s. 
-              Intention check: is this exploration or distraction?"
-```
-
-**ReOS Nav Pane now shows:**
-```
-┌────────────────────────────────────┐
-│ VSCode Projects                    │
-├────────────────────────────────────┤
-│ Fragmentation: 100% ⚠️             │
-│                                    │
-│ ✓ backend: 4 files, 4m             │
-│ ✓ frontend: 2 files, 3m            │
-└────────────────────────────────────┘
-```
-
----
-
-### **Phase 6: Human Notices & Reflects** (2:09 PM)
-
-**What the human does:**
-```
-1. Glances at ReOS nav pane
-2. Sees "Fragmentation: 100%" and switching pattern
-3. Reads explanation: "Is this exploration or distraction?"
-4. Realizes: "Oh, I was context-switching a lot. Let me check my intention."
-5. Clicks on fragmentation indicator to open reflection panel
-```
-
-**ReOS Reflection Panel opens:**
-```
-┌──────────────────────────────────────────┐
-│ Attention Reflection                     │
-├──────────────────────────────────────────┤
-│                                          │
-│ Last 5 minutes analysis:                 │
-│                                          │
-│ • 8 context switches                     │
-│ • Across 4 files in 2 projects           │
-│ • Fragmentation score: 100%              │
-│                                          │
-│ Pattern: "This looks like rapid          │
-│ exploration across many contexts."       │
-│                                          │
-│ Question:                                │
-│ ┌──────────────────────────────────────┐ │
-│ │ What was your intention with this    │ │
-│ │ switching? Choose one:               │ │
-│ │                                      │ │
-│ │ [A] Creative exploration             │ │
-│ │ [B] Investigating a complex bug      │ │
-│ │ [C] Unplanned fragmentation          │ │
-│ │ [D] Testing across systems           │ │
-│ └──────────────────────────────────────┘ │
-└──────────────────────────────────────────┘
-```
-
-**The human chooses**: [A] Creative exploration
-
----
-
-### **Phase 7: Human's Reflection Stored** (2:09:30 PM)
-
-**ReOS calls** `handle_note()` command:
-
-```python
-# User selected intention
-db.insert_event(
-  event_id='evt-reflection-001',
-  source='user',
-  kind='reflection_note',
-  ts='2024-12-17T14:09:30Z',
-  payload_metadata=json.dumps({
-    "intention": "creative_exploration",
-    "fragmentation_score": 1.0,
-    "context": "switching between backend and frontend"
-  }),
-  note="Intentional exploration across backend API and frontend components"
-)
-```
-
-**Stored in SQLite audit_log**: User's intentional choice documented
-
-**ReOS responds:**
-```
-✅ Intention recorded: "Creative exploration across backend/frontend"
-
-Next time you have similar switching patterns, I'll remember this.
-You were intentional then; you can be intentional now.
-```
-
----
-
-### **Phase 8: Later in Day, Similar Pattern Detected** (3:30 PM)
-
-**Human is switching between files again** (7 switches in 5 min)
-
-**ReOS calls** `calculate_fragmentation()`:
-```
-Score: 0.875 (highly fragmented)
-```
-
-**But now ReOS has learned context:**
-
-From audit_log, it knows:
-- Similar pattern at 2:05-2:10 PM
-- Human called it "creative exploration"
-- Not negative; intentional
-
-**ReOS Reflection Panel shows:**
-```
-Pattern detected: Similar to earlier today.
-
-⭐ Earlier, you called this "creative exploration."
-   You were switching between backend and frontend
-   while investigating API design.
-
-This switching looks similar. Are you:
-  [A] In another exploration phase?
-  [B] This time unplanned?
-  [C] Deep focus in one area now?
-```
-
-**The human sees their own past reasoning reflected back.** This enables learning.
-
----
-
-## Complete Data Flow Diagram
-
-```
-                        ┌─────────────────┐
-                        │   HUMAN WORK    │
-                        │  (VSCode)       │
-                        │                 │
-                        │ Edit files,     │
-                        │ switch projects │
-                        └────────┬────────┘
-                                 │
-                                 │ User takes action
-                                 │ (file focus change)
-                                 │
-                   ┌─────────────▼──────────────┐
-                   │  VSCode Extension          │
-                   │  (Silent Observer)         │
-                   │                            │
-                   │ • Captures file focus      │
-                   │ • Extracts project name    │
-                   │ • Publishes heartbeat      │
-                   │ • Tracks history           │
-                   └─────────────┬──────────────┘
-                                 │
-                                 │ Events published
-                                 │ (sub-second latency)
-                                 │
-                   ┌─────────────▼──────────────┐
-                   │  FastAPI Service           │
-                   │  POST /events              │
-                   │                            │
-                   │ Receives: active_editor,   │
-                   │           heartbeat, etc   │
-                   └─────────────┬──────────────┘
-                                 │
-                                 │ Events persisted
-                                 │
-                   ┌─────────────▼──────────────┐
-                   │  SQLite Local Store        │
-                   │  (.reos-data/main.db)      │
-                   │                            │
-                   │ Tables:                    │
-                   │ • events (all VSCode       │
-                   │   activity)                │
-                   │ • sessions (work periods)  │
-                   │ • classifications          │
-                   │ • audit_log (reflections)  │
-                   └──┬──────────────────┬──────┘
-                      │                  │
-         ┌────────────▼─┐         ┌──────▼───────────┐
-         │ Attention    │         │ ReOS GUI          │
-         │ Module       │         │ (Companion)       │
-         │              │         │                   │
-         │ Calculates:  │         │ • Nav Pane        │
-         │ • Fragment   │         │ • Chat interface  │
-         │ • Projects   │         │ • Metrics display │
-         │ • Pattern    │         │                   │
-         └────────────┬─┘         └────────┬──────────┘
-                      │                    │
-                      └────────┬───────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │  Human Sees:        │
-                    │  • Projects list    │
-                    │  • Fragmentation    │
-                    │    score            │
-                    │  • Reflection       │
-                    │    prompts          │
-                    └──────────┬──────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │ Human Chooses:      │
-                    │ • Intention         │
-                    │ • Reflection        │
-                    │ • Next action       │
-                    └──────────┬──────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │ SQLite audit_log    │
-                    │                     │
-                    │ Stores:             │
-                    │ • Intention choice  │
-                    │ • Reflection note   │
-                    │ • User context      │
-                    └─────────────────────┘
-```
-
----
-
-## Data Structure Examples
-
-### Event: File Switch
-```json
-{
-  "kind": "active_editor",
-  "source": "vscode-extension",
-  "timestamp": "2024-12-17T14:03:00Z",
-  "projectName": "frontend",
-  "uri": "file:///dev/frontend/src/components/Button.tsx",
-  "languageId": "typescript",
-  "workspaceFolder": "/dev/frontend",
-  "editorChangeTime": "2024-12-17T14:03:00Z"
-}
-```
-
-### Event: Heartbeat (Time-in-file tracking)
-```json
-{
-  "kind": "heartbeat",
-  "source": "vscode-extension",
-  "timestamp": "2024-12-17T14:00:25Z",
-  "projectName": "backend",
-  "uri": "file:///dev/backend/src/main.py",
-  "timeInFileSeconds": 10,
-  "fileHistoryCount": 2
-}
-```
-
-### Fragmentation Metrics (Computed)
-```json
-{
-  "fragmentation_score": 1.0,
-  "switch_count": 8,
-  "unique_files": 4,
-  "window_seconds": 300,
-  "explanation": "Fragmented attention: 8 switches across 4 files in 300s. Intention check: is this exploration or distraction?"
-}
-```
-
-### Session Summary (Computed)
-```json
-{
-  "status": "active",
-  "total_duration_seconds": 600,
-  "projects": [
-    {
-      "name": "backend",
-      "file_count": 4,
-      "estimated_duration_seconds": 360
-    },
-    {
-      "name": "frontend",
-      "file_count": 2,
-      "estimated_duration_seconds": 240
-    }
+  "kind": "git_poll",
+  "repo": "/home/user/dev/ReOS",
+  "branch": "main",
+  "changed_files": [
+    "src/reos/alignment.py",
+    "docs/tech-roadmap.md"
   ],
-  "fragmentation": {
-    "score": 1.0,
-    "switches": 8,
-    "explanation": "Fragmented attention..."
-  }
+  "diff_stat": "2 files changed, 31 insertions(+), 6 deletions(-)",
+  "ts": "2025-12-17T14:03:30Z"
 }
 ```
 
-### User Reflection (Stored in audit_log)
-```json
-{
-  "kind": "reflection_note",
-  "source": "user",
-  "timestamp": "2024-12-17T14:09:30Z",
-  "payload_metadata": {
-    "intention": "creative_exploration",
-    "fragmentation_score": 1.0,
-    "context": "switching between backend and frontend",
-    "note": "Intentional exploration across backend API and frontend components"
-  }
-}
-```
+### Phase 2: ReOS evaluates drift + thread breadth
+
+ReOS compares current changes to:
+
+- `docs/tech-roadmap.md`
+- `ReOS_charter.md`
+
+Signals include:
+
+- how many changed files are not referenced/anchored in roadmap/charter
+- how many distinct areas are being touched (e.g. `src/`, `docs/`, `tests/`)
+- change magnitude (numstat) and context-budget pressure
+
+### Phase 3: ReOS surfaces a gentle checkpoint
+
+When thresholds are crossed (with cooldown), ReOS emits an `alignment_trigger` event and the GUI displays a short prompt:
+
+- “Quick checkpoint: your current changes may be opening multiple threads or drifting from the roadmap/charter. Want to run `review_alignment`?”
+
+### Phase 4: Deeper review (LLM cites code changes)
+
+For deeper determination, ReOS can run an alignment review that:
+
+- summarizes changes and cites diffs (opt-in)
+- answers (with transparency):
+  - what changed
+  - where it maps (or doesn’t) to roadmap/charter
+  - whether multiple threads are open
 
 ---
 
-## Key Interaction Principles
+## What ReOS avoids
 
-### 1. **Silence by Default**
-The extension never interrupts. It observes. The human controls when to look at ReOS.
-
-### 2. **Transparency**
-Every metric shows its calculation:
-- "Fragmentation: 8 switches across 4 files in 300s"
-- Not: "Your productivity is 62%"
-
-### 3. **Human Agency**
-The human chooses their intention. ReOS reflects patterns. The human decides.
-
-### 4. **Local & Safe**
-All data stays in `.reos-data/`. No cloud. User owns everything.
-
-### 5. **Learning from Reflection**
-When the human says "This was intentional exploration," ReOS remembers. Next similar pattern includes that context.
-
-### 6. **Compassionate Language**
-- ❌ "You were distracted."
-- ✅ "8 switches in 5 minutes. What was your intention?"
-
----
-
-## The Three Phases of Interaction
-
-### **Phase 1: Observation** (Extension → SQLite)
-- Silent, continuous
-- Human doesn't need to do anything
-- All data captured automatically
-
-### **Phase 2: Reflection** (ReOS analyzes & displays)
-- Human optionally looks at ReOS
-- Sees metrics, patterns, fragmentation
-- No judgment; just information
-
-### **Phase 3: Intention** (Human reflects & responds)
-- Human chooses to respond to prompt
-- Stores their intention
-- ReOS learns from their choice
-
-**Then loop repeats**: Observation → Reflection → Intention → Learning
-
----
-
-## The Second Loop: Roadmap/Charter Alignment (Project-Aware Guidance)
-
-Fragmentation/coherence is only one dimension. ReOS also needs to be **project-aware**:
-it should notice when your work is drifting away from the current roadmap thread, when changes
-touch files that aren’t grounded in the roadmap/charter, or when a previously coherent thread
-is being orphaned.
-
-This loop stays **local-first** and **transparent**.
-
-### What’s Different Here?
-
-- **Input signal** is not just file switching; it’s **code change shape** (git status + diffstat) and
-  **where those changes land** in the repo.
-- ReOS compares changed files to the roadmap and charter as *anchors*.
-- Output is questions like: “Is this intentional exploration?” not enforcement.
-
-### Example: Drift Detection Through Git + Roadmap
-
-**Human action**: makes uncommitted changes across multiple files.
-
-**ReOS action** (via `review_alignment`):
-
-1. Infer the active repo from VSCode events (`workspaceFolder`).
-2. Read git working tree metadata:
-   - `git status --porcelain` → which files changed
-   - `git diff --stat` → shape of change
-3. Read roadmap and charter:
-   - `docs/tech-roadmap.md`
-   - `ReOS_charter.md`
-4. Extract any file-path anchors mentioned in those docs.
-5. Compare:
-   - changed files that are *not* referenced → possible drift / new surface area
-   - changed files that *are* referenced → likely on-thread
-6. Offer reflective questions.
-
-**Example output** (metadata-only):
-```json
-{
-  "repo": {
-    "branch": "main",
-    "changed_files": [
-      "src/reos/gui/main_window.py",
-      "src/reos/some_new_module.py"
-    ],
-    "diff_stat": "2 files changed, 40 insertions(+)"
-  },
-  "alignment": {
-    "unmapped_changed_files": ["src/reos/some_new_module.py"],
-    "recent_active_files": ["file:///.../main_window.py", "file:///.../some_new_module.py"]
-  },
-  "questions": [
-    "Some changed files aren't referenced in the roadmap/charter. Is this intentional exploration, or are we drifting from stated milestones?"
-  ]
-}
-```
-
-### Why This Matters
-
-This is how ReOS helps with what you described:
-
-- **Going too far ahead**: new modules/files not grounded in current roadmap anchors.
-- **Undefined work**: changes that don’t map to any described milestone or charter constraint.
-- **Orphaning a thread**: rapid movement into new areas while leaving a previously coherent thread without closure.
-
-ReOS can’t decide what matters for you — but it can notice when your work’s center of gravity
-is moving away from your stated intent and ask: “Was that move chosen?”
-
----
-
-## Why This Design?
-
-**Problem**: Productivity tools interrupt. They guilt. They optimize for tools, not humans.
-
-**ReOS Solution**:
-1. **Observation without interruption**: Extension silent by default
-2. **Reflection without judgment**: Metrics transparent, language compassionate
-3. **Agency preserved**: Human chooses when to reflect, what their intention is
-4. **Learning from context**: Each reflection informs future analysis
-
-**Result**: Attention treated as labor, not a score to optimize. Humans see their patterns, choose intentionally, and ReOS learns from their wisdom.
-
----
-
-## Next Steps: The Human's Choice
-
-At any point, the human can:
-
-- **Ignore metrics**: Keep coding. ReOS stays out of the way.
-- **Reflect briefly**: Check nav pane. See fragmentation. Continue.
-- **Reflect deeply**: Open reflection panel. Answer intention questions. Store insights.
-- **Ask LLM**: "Help me understand this switching pattern." (Ollama integration coming M3)
-
-**The human is always in control. ReOS is always a companion, never a commander.**
+- No editor extension requirement.
+- No “distraction” labeling from metadata.
+- No file-content capture by default.

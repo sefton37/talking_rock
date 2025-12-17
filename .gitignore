@@ -33,14 +33,6 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# VS Code extension builds (if added later)
-vscode-extension/out/
-
-# VS Code extension packaging/tests
-*.vsix
-.vscode-test/
-.vscode-test-web/
-
 # Editors
 *.swp
 .idea/

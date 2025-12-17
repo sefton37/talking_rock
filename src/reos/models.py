@@ -12,7 +12,7 @@ class HealthResponse(BaseModel):
 
 
 class Event(BaseModel):
-    source: str = Field(..., description="Event origin (e.g., vscode, copilot, git)")
+    source: str = Field(..., description="Event origin (e.g., git, reos)")
     ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
     payload_metadata: dict[str, Any] | None = Field(
         default=None, description="Metadata only; no content bodies."

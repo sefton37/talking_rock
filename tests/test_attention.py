@@ -1,10 +1,10 @@
-"""Tests for attention metrics and fragmentation detection."""
+"""Tests for attention signals and switching detection."""
 
 from __future__ import annotations
 
 import json
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -28,8 +28,8 @@ def temp_db() -> Database:
 
 
 def test_fragmentation_detection(temp_db: Database) -> None:
-    """Test fragmentation score calculation from file switch events."""
-    now = datetime.now(timezone.utc)
+    """Test switching score calculation from file switch events."""
+    now = datetime.now(UTC)
 
     # Insert simulated editor events: rapid file switching
     for i in range(10):
@@ -37,7 +37,7 @@ def test_fragmentation_detection(temp_db: Database) -> None:
         ts = (now - timedelta(seconds=300 - i * 10)).isoformat()
         temp_db.insert_event(
             event_id=f"evt-{i}",
-            source="vscode-extension",
+            source="legacy-editor",
             kind="active_editor",
             ts=ts,
             payload_metadata=json.dumps(
@@ -50,19 +50,19 @@ def test_fragmentation_detection(temp_db: Database) -> None:
             note=None,
         )
 
-    # Calculate fragmentation for last 5 minutes
+    # Calculate switching signal for last 5 minutes
     metrics = calculate_fragmentation(temp_db, time_window_seconds=300, switch_threshold=8)
 
-    # 10 events across 3 files = 8-9 switches (fragmented)
+    # 10 events across 3 files = 8-9 switches (high switching)
     # The algorithm captures 8 switches (unique files - 1)
     assert metrics.switch_count >= 8
     assert metrics.fragmentation_score > 0.5  # Should be high
-    assert "Fragmented" in metrics.explanation or "scattered" in metrics.explanation
+    assert "High switching" in metrics.explanation or "Moderate switching" in metrics.explanation
 
 
 def test_session_summary(temp_db: Database) -> None:
     """Test aggregating current session data."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Insert events across two projects
     projects = ["frontend", "backend"]
@@ -72,7 +72,7 @@ def test_session_summary(temp_db: Database) -> None:
             ts = (now - timedelta(seconds=600 - i * 30)).isoformat()
             temp_db.insert_event(
                 event_id=f"{project}-evt-{i}",
-                source="vscode-extension",
+                source="legacy-editor",
                 kind="active_editor",
                 ts=ts,
                 payload_metadata=json.dumps(
@@ -91,7 +91,7 @@ def test_session_summary(temp_db: Database) -> None:
         ts = (now - timedelta(seconds=300 - i * 60)).isoformat()
         temp_db.insert_event(
             event_id=f"heartbeat-{i}",
-            source="vscode-extension",
+            source="legacy-editor",
             kind="heartbeat",
             ts=ts,
             payload_metadata=json.dumps(
@@ -113,15 +113,15 @@ def test_session_summary(temp_db: Database) -> None:
     projects_list = summary.get("projects", [])
     assert len(projects_list) > 0
 
-    # Should have fragmentation metric
-    frag = summary.get("fragmentation", {})
-    assert "score" in frag
-    assert "explanation" in frag
+    # Should have switching metric (preferred)
+    switching = summary.get("switching", {})
+    assert "score" in switching
+    assert "explanation" in switching
 
 
 def test_attention_classification(temp_db: Database) -> None:
     """Test high-level classification of attention patterns."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Insert events: single project, moderate switching
     for i in range(4):
@@ -129,7 +129,7 @@ def test_attention_classification(temp_db: Database) -> None:
         ts = (now - timedelta(seconds=300 - i * 60)).isoformat()
         temp_db.insert_event(
             event_id=f"evt-{i}",
-            source="vscode-extension",
+            source="legacy-editor",
             kind="active_editor",
             ts=ts,
             payload_metadata=json.dumps(
@@ -145,7 +145,7 @@ def test_attention_classification(temp_db: Database) -> None:
     classification = classify_attention_pattern(temp_db)
 
     # Should classify the pattern
-    assert "fragmentation" in classification
+    assert "switching_level" in classification
     assert "pattern" in classification
     assert "explanation" in classification
 
@@ -153,4 +153,4 @@ def test_attention_classification(temp_db: Database) -> None:
     assert "evolutionary" in classification["pattern"] or "mixed" in classification["pattern"]
 
     # Moderate switches → not extreme
-    assert "coherent" in classification["fragmentation"] or "mixed" in classification["fragmentation"]
+    assert classification["switching_level"] != "high_switching"

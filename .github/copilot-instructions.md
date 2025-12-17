@@ -1,64 +1,45 @@
 ## Copilot Instructions for ReOS
 
-### Vision: Bifocal Interface (Build in VSCode, Reflect in ReOS)
+### Vision: Git Companion (Build Anywhere, Reflect in ReOS)
 
-ReOS is a **companion attention system** for developers. You work in VSCode (primary workspace), and ReOS observes your patterns + offers wisdom:
+ReOS is a **companion attention system** for developers.
 
-```
-VSCode (Primary: Build)          ReOS (Companion: Reflect)
-─────────────────────────────    ──────────────────────────
-User coding, switching files  →  Observes file focus, git
-                                 commits, time patterns
-                                 ↓
-                                 Real-time metrics: "8 context
-                                 switches in 5 min"
-                                 ↓
-                                 Compassionate prompt: "Settle
-                                 into one file? Or is this
-                                 exploration?"
-                                 ↓
-User clicks ReOS insight  ←  ──  Reflection panel opens with
-                                 full reasoning, session data,
-                                 asking "What was your intention?"
-```
+- Your editor is the primary workspace (any editor).
+- **Git is the primary signal source** for what changed.
+- ReOS sits alongside and reflects back patterns: drift vs plan, too many parallel threads, and gentle checkpoints.
 
-**Not**: A chat app you alt-tab to. **But**: A companion that notices your work patterns and reflects back.
+ReOS is **not** a task manager and **not** a surveillance tool. It is a memory + reflection surface for how attention is being spent through changes.
 
-### Current Architecture (M0 → M1 Phase)
+### Current Architecture (Git-First)
 
-**Tech Stack**: Python 3.12, PySide6 (ReOS companion GUI), FastAPI (event service), Ollama (local LLM), SQLite (local persistence), JavaScript (VSCode extension)
+**Tech Stack**: Python 3.12, PySide6 (ReOS GUI), FastAPI (optional local event service), Ollama (local LLM), SQLite (local persistence), Git CLI.
 
 **Key Components**:
-1. **VSCode Extension** (Primary Observer)
-   - Tracks: active file, time in file, git commits, project context
-   - Publishes to SQLite → ReOS consumes
-   - Silent by default; minimal status bar UI
-   - File: `vscode-extension/extension.js`
+1. **Git Observer** (Primary Observer)
+   - Polls repo metadata locally (`git status`, `git diff --stat`, `git diff --numstat`).
+   - Optionally (explicit opt-in), includes limited diff text for deeper review.
+   - File: `src/reos/git_poll.py`
 
 2. **ReOS Desktop App** (Companion + Reflection)
-   - 3-pane layout: nav (VSCode projects) | dashboard/chat | inspection (reasoning)
-   - Shows real-time attention metrics
-   - Proactive prompts: "You're fragmented. Settle or explore?"
+   - 3-pane layout: repos | reflection | inspection (reasoning trail).
+   - Surfaces gentle checkpoints when changes suggest drift or too many threads.
    - Files: `src/reos/gui/main_window.py`, `src/reos/gui/__init__.py`
 
 3. **SQLite Core** (Single Source of Truth)
-   - Events from VSCode → stored here
-   - Sessions, classifications, audit_log all derived from events
+   - Stores git snapshots + checkpoint events + user notes.
    - File: `src/reos/db.py`
 
-4. **Command Registry** (Reasoning About Attention)
-   - Commands: reflect_recent, inspect_session, list_events, note
-   - NOT generic tools; these introspect VSCode-derived attention data
+4. **Command Registry** (Reasoning About Alignment)
+   - Commands are repo-centric and compare changes against `docs/tech-roadmap.md` + `ReOS_charter.md`.
    - File: `src/reos/commands.py`
 
 5. **Ollama Layer** (Local LLM)
-   - All reasoning local; no cloud calls
-   - System prompt includes attention patterns derived from VSCode events
+   - All reasoning local; no cloud calls.
    - File: `src/reos/ollama.py`
 
 ### Design Principles
 
-- **Bifocal Workflow**: VSCode is primary (user's flow stays unbroken); ReOS is always-on companion.
+- **Bifocal Workflow**: Your editor is primary (your flow stays unbroken); ReOS is always-on companion.
 - **Observation Over Prescription**: ReOS notices what you're doing, doesn't tell you what to do.
 - **Attention as Sacred**: Reflections honor labor—never shame, guilt, or moral judgment.
 - **Checks & Balances**: Proactive nudges ("You've been deep for 2 hrs—water break?"), not punishments.
@@ -69,15 +50,15 @@ User clicks ReOS insight  ←  ──  Reflection panel opens with
 
 **Before Writing Code**:
 1. Check the charter ([ReOS_charter.md](../ReOS_charter.md)) — does this serve "protect, reflect, return attention"?
-2. Ask: "Does this strengthen the VSCode+ReOS bifocal system, or create distraction?"
+2. Ask: "Does this strengthen the Git-first + ReOS bifocal system, or create distraction?"
 3. If adding data collection: "Is this metadata-only? Does user consent?"
 4. If adding UI/language: "Is this compassionate, non-prescriptive, non-judgmental?"
 
 **Architecture Principles**:
-- VSCode extension is the **observer** (collect data).
+- Git polling is the **observer** (collect local repo signals).
 - ReOS app is the **companion** (reflect, offer wisdom).
-- Bifocal means: VSCode should not be disrupted; ReOS prompts should be wise, not noisy.
-- All attention patterns derived from VSCode events (don't make up data).
+- Bifocal means: the editor should not be disrupted; ReOS prompts should be wise, not noisy.
+- Drift/threads are assessed against charter + roadmap; avoid conjuring intent from metadata.
 
 **Code Style & Validation**:
 - `ruff check` (100-char lines, sorted imports, PEP8)
@@ -105,25 +86,18 @@ User clicks ReOS insight  ←  ──  Reflection panel opens with
 - Schema in `src/reos/db.py` (events, sessions, classifications, audit_log)
 - All tables have `created_at`, `ingested_at` for audit trail
 - Use `Database.get_db()` singleton for safe access
-- Events table: populated by VSCode extension; cleaned/normalized in SQLite
+- Events table: populated by git observer snapshots and checkpoint triggers
 - Fresh DB per test (avoid threading issues)
 
-**VSCode Extension Work**:
-- JavaScript; connects to ReOS FastAPI service
-- Observes: file focus (`onDidChangeActiveTextEditor`), git (shell command), time
-- Publishes to SQLite via `/events` endpoint → no user interruption
-- Status bar: optional "ReOS listening" indicator + toggle mirroring on/off
-- NO keystroke logging; NO content capture; metadata only
-
 **ReOS Desktop App (PySide6)**:
-- Left nav pane: VSCode projects/sessions (clickable, load context)
+- Left nav pane: observed repos/sessions (clickable, load context)
 - Center: real-time attention dashboard + reflection chat
 - Right inspection pane: click on insight → show reasoning (system prompt + LLM output + tools called)
 - Proactive prompts: "8 switches in 5 min—settle on one file?" (compassionate, not demanding)
 - No gamified UI; no streaks, scores, or "levels"
 
 **Attention Classification** (Coming):
-- Track context switching from VSCode file events
+- Track context switching signals (optionally from editor events; Git remains primary)
 - Detect "frayed mind" (rapid switches + shallow engagement + no-break periods)
 - Classify periods as: coherent (deep focus) vs fragmented (scattered attention)
 - Classify as: revolution (disruptive change) vs evolution (gradual integration)
@@ -149,50 +123,23 @@ User clicks ReOS insight  ←  ──  Reflection panel opens with
 ### Typical Workflow (Vision)
 
 ```
-1. User opens VSCode + ReOS side-by-side
-2. VSCode extension silently observes:
-   - file-focus events (via onDidChangeActiveTextEditor)
-   - git commits/branch changes (via shell command)
-   - time spent in each file
-   → all published to SQLite
+1. User codes in their editor of choice
+2. ReOS observes the repo (local Git polling):
+   - working tree state
+   - diffstat/numstat (change breadth)
+   - optional diff text (explicit opt-in)
+   → stored in SQLite
+3. ReOS shows:
+   - repo status + change scope signals
+   - checkpoints: drift vs charter/roadmap, or too many threads
+4. User can open an insight to see the inspection trail and add a note.
 
-3. ReOS dashboard shows real-time:
-   - Current project + session
-   - Files open + time in each
-   - Context switch count
-   - Fragmentation score (derived from switching pattern)
-
-4. ReOS detects pattern (e.g., "8 switches in 5 min"):
-   - Proactive prompt appears: "8 context switches in 5 minutes.
-     Settle into one file? Or is this creative exploration?"
-
-5. User sees prompt, reflects:
-   - Clicks "This is exploration" → stored as user reflection
-   - Or ignores it → ReOS learns this pattern
-
-6. User wants deeper reflection:
-   - Clicks ReOS prompt/insight
-   - Reflection panel opens: "Here's your last 2 hours..."
-   - Shows reasoning trace (system prompt + LLM output + tools)
-   - Asks: "What was your intention with that switching?"
-
-7. User answers reflection question:
-   - Stored in SQLite (audit_log)
-   - ReOS learns: "Ah, that switching WAS exploration, not fragmentation"
-   - Next similar pattern: "Remember last time? You were exploring."
-
-Result: VSCode stays primary; ReOS is wise companion offering patterns,
-        not interruption. User feels seen and supported, not judged.
+Result: Your editor stays primary; ReOS stays a quiet companion that helps you return to intention.
 ```
 
 ### Running & Testing
 
 ```bash
-# VSCode Extension
-cd vscode-extension/
-npm install
-npm run watch  # Watches for changes; ready to debug in VSCode
-
 # ReOS Desktop App
 python -m reos.gui          # Launch app
 reos-gui                     # (same, via script entry)
@@ -212,7 +159,7 @@ mypy src/ --ignore-missing-imports  # Type checking
 
 | File | Purpose | Team |
 |------|---------|------|
-| `vscode-extension/extension.js` | VSCode observer (file focus, git) | Extension |
+| `src/reos/git_poll.py` | Git observer polling and snapshot events | Core |
 | `src/reos/gui/main_window.py` | ReOS 3-pane layout | GUI |
 | `src/reos/commands.py` | Attention introspection commands | Core |
 | `src/reos/db.py` | SQLite schema (events, sessions, classifications) | Core |
@@ -225,7 +172,7 @@ mypy src/ --ignore-missing-imports  # Type checking
 ### Before You Ask for Help
 
 - Is your question about a principle → check the charter first
-- Is it about bifocal architecture → ask: "Does this keep VSCode unbroken while ReOS is wise?"
+- Is it about bifocal architecture → ask: "Does this keep the editor unbroken while ReOS is wise?"
 - Is it about language → ask: "Is this compassionate and non-prescriptive?"
 - Is it about data → ask: "Is this metadata-only? Does user consent?"
 - Is it about code style → run ruff, mypy, pytest

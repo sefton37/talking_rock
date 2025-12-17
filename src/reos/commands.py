@@ -5,9 +5,15 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from .alignment import analyze_alignment
+from .alignment import (
+    analyze_alignment,
+    get_review_context_budget,
+    infer_active_repo_path,
+    is_git_repo,
+)
 from .attention import classify_attention_pattern, get_current_session_summary
 from .db import Database
 
@@ -26,23 +32,22 @@ def get_command_registry() -> list[Command]:
     """Get the list of commands the LLM can reason about.
 
     This is sent to the LLM in the system prompt so it can decide which tools to use.
-    All commands introspect VSCode-derived attention data from SQLite.
+    Commands are Git-first and repo-centric.
     """
     return [
         Command(
             name="reflect_recent",
             description=(
-                "Summarize your recent attention patterns from VSCode activity: "
-                "switches, focus depth, fragmentation. Shows what your attention "
-                "actually served. No parameters."
+                "Summarize recent repo activity signals derived from git snapshots "
+                "and checkpoints. "
+                "Descriptive, not moral. No parameters."
             ),
             parameters={},
         ),
         Command(
             name="inspect_session",
             description=(
-                "Get details about your current or recent coding session: "
-                "which projects, how long in each, file switching patterns."
+                "Get details about recent repo state/checkpoints in the local event store."
             ),
             parameters={
                 "type": "object",
@@ -57,8 +62,7 @@ def get_command_registry() -> list[Command]:
         Command(
             name="list_events",
             description=(
-                "List recent VSCode events: editor activity, saves, file switches. "
-                "Helps understand what actions your attention has taken."
+                "List recent local events: git snapshots and checkpoint triggers."
             ),
             parameters={
                 "type": "object",
@@ -74,7 +78,7 @@ def get_command_registry() -> list[Command]:
             name="note",
             description=(
                 "Store a reflection or observation about your attention. "
-                "Example: 'This switching was creative exploration, not distraction.'"
+                "Example: 'This switching was creative exploration, not thread drift.'"
             ),
             parameters={
                 "type": "object",
@@ -98,6 +102,26 @@ def get_command_registry() -> list[Command]:
                         "description": (
                             "If true, include full `git diff` text in the output (local-only). "
                             "Default false."
+                        ),
+                    }
+                },
+            },
+        ),
+        Command(
+            name="review_trigger_status",
+            description=(
+                "Estimate whether roadmap + charter + current repo changes are nearing the "
+                "configured LLM context budget, and whether ReOS would trigger a review "
+                "checkpoint. Metadata-only (uses `git diff --numstat`)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": (
+                            "Optional path to a repo/workspace folder. If omitted, inferred from "
+                            "REOS_REPO_PATH or the current workspace root."
                         ),
                     }
                 },
@@ -148,8 +172,7 @@ def handle_list_events(params: dict[str, Any]) -> str:
                     {
                         "kind": evt.get("kind"),
                         "timestamp": evt.get("ts"),
-                        "project": meta.get("projectName"),
-                        "uri": meta.get("uri", "")[-50:],  # Last 50 chars of URI
+                        "repo": meta.get("repo"),
                     }
                 )
             except Exception:
@@ -195,6 +218,68 @@ def handle_review_alignment(params: dict[str, Any]) -> str:
         return json.dumps(report, indent=2)
     except Exception as e:
         return f"Error reviewing alignment: {e}"
+
+
+def handle_review_trigger_status(params: dict[str, Any]) -> str:
+    """Return current context budget estimate and trigger state."""
+    try:
+        db = Database()
+
+        repo_path_param = params.get("repo_path")
+        repo_path: Path | None = None
+        if isinstance(repo_path_param, str) and repo_path_param:
+            repo_path = Path(repo_path_param)
+        else:
+            repo_path = infer_active_repo_path(db)
+
+        if repo_path is None:
+            return json.dumps(
+                {
+                    "status": "no_repo_detected",
+                    "message": "No git repo detected. Set REOS_REPO_PATH or run inside a repo.",
+                },
+                indent=2,
+            )
+
+        if not is_git_repo(repo_path):
+            return json.dumps(
+                {
+                    "status": "not_a_git_repo",
+                    "repo": str(repo_path),
+                },
+                indent=2,
+            )
+
+        roadmap_path = repo_path / "docs" / "tech-roadmap.md"
+        charter_path = repo_path / "ReOS_charter.md"
+        budget = get_review_context_budget(
+            repo_path=repo_path,
+            roadmap_path=roadmap_path,
+            charter_path=charter_path,
+        )
+
+        return json.dumps(
+            {
+                "status": "ok",
+                "repo": str(repo_path),
+                "estimate": {
+                    "context_limit_tokens": budget.context_limit_tokens,
+                    "total_tokens": budget.total_tokens,
+                    "utilization": budget.utilization,
+                    "trigger_ratio": budget.trigger_ratio,
+                    "should_trigger": budget.should_trigger,
+                    "breakdown": {
+                        "roadmap_tokens": budget.roadmap_tokens,
+                        "charter_tokens": budget.charter_tokens,
+                        "changes_tokens": budget.changes_tokens,
+                        "overhead_tokens": budget.overhead_tokens,
+                    },
+                },
+            },
+            indent=2,
+        )
+    except Exception as e:
+        return f"Error estimating review trigger status: {e}"
 
 
 def registry_as_json_schema() -> dict[str, Any]:

@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .context_budget import ReviewContextBudget, build_review_context_budget, safe_read_text
 from .db import Database
+from .settings import settings
 
 
 @dataclass(frozen=True)
@@ -29,8 +31,25 @@ class GitSummary:
 
 
 _FILE_PATH_PATTERN = re.compile(
-    r"(?P<path>(?:src|tests|docs|vscode-extension|\.github)/[\w\-./]+\.[\w\-]+)"
+    r"(?P<path>(?:src|tests|docs|\.github)/[\w\-./]+\.[\w\-]+)"
 )
+
+
+def get_default_repo_path() -> Path | None:
+    """Return the default repo path ReOS should observe (Git-first).
+
+    Preference order:
+    1) `REOS_REPO_PATH` (settings.repo_path)
+    2) workspace root (settings.root_dir) if it is a git repo
+    """
+
+    if settings.repo_path is not None and is_git_repo(settings.repo_path):
+        return settings.repo_path
+
+    if is_git_repo(settings.root_dir):
+        return settings.root_dir
+
+    return None
 
 
 def _run_git(repo_path: Path, args: list[str]) -> str:
@@ -108,38 +127,51 @@ def extract_file_mentions(markdown_text: str) -> set[str]:
     return {m.group("path") for m in _FILE_PATH_PATTERN.finditer(markdown_text)}
 
 
-def _safe_read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
+def _git_numstat(repo_path: Path) -> str:
+    """Return `git diff --numstat` output (metadata only)."""
+
+    return _run_git(repo_path, ["diff", "--numstat"]).strip()
+
+
+def get_review_context_budget(
+    *,
+    repo_path: Path,
+    roadmap_path: Path,
+    charter_path: Path,
+) -> ReviewContextBudget:
+    """Estimate review context usage for current changes.
+
+    Uses project docs (roadmap/charter text) plus git numstat (line counts).
+    """
+
+    roadmap_text = safe_read_text(roadmap_path)
+    charter_text = safe_read_text(charter_path)
+    numstat_text = _git_numstat(repo_path)
+
+    return build_review_context_budget(
+        context_limit_tokens=settings.llm_context_tokens,
+        trigger_ratio=settings.review_trigger_ratio,
+        roadmap_text=roadmap_text,
+        charter_text=charter_text,
+        numstat_text=numstat_text,
+        overhead_tokens=settings.review_overhead_tokens,
+        tokens_per_changed_line=settings.tokens_per_changed_line,
+        tokens_per_file=settings.tokens_per_changed_file,
+    )
 
 
 def infer_active_repo_path(db: Database) -> Path | None:
-    """Infer the active repo path from recent VSCode events.
+    """Legacy helper: infer a repo from stored events.
 
-    Uses the most recent event with a `workspaceFolder` field.
+    ReOS is Git-first; prefer `get_default_repo_path()`.
+    This remains for backward compatibility with older event sources.
     """
-    for evt in db.iter_events_recent(limit=200):
-        payload = evt.get("payload_metadata")
-        if not isinstance(payload, str) or not payload:
-            continue
-        try:
-            import json
 
-            meta = json.loads(payload)
-        except Exception:
-            continue
-
-        folder = meta.get("workspaceFolder")
-        if isinstance(folder, str) and folder:
-            return Path(folder)
-
-    return None
+    return get_default_repo_path()
 
 
 def get_recent_active_files(db: Database, *, limit: int = 100) -> list[str]:
-    """Return recent active editor URIs (best-effort)."""
+    """Legacy helper: return recent editor URIs if event sources provide them."""
     files: list[str] = []
     seen: set[str] = set()
 
@@ -182,11 +214,11 @@ def analyze_alignment(
     - surfaces possible drift: changes far from current milestones
     - offers questions rather than prescriptions
     """
-    inferred_repo = repo_path or infer_active_repo_path(db)
+    inferred_repo = repo_path or get_default_repo_path()
     if inferred_repo is None:
         return {
             "status": "no_repo_detected",
-            "message": "No workspaceFolder found in recent VSCode events.",
+            "message": "No git repo detected. Set REOS_REPO_PATH or run ReOS inside a repo.",
         }
 
     roadmap = roadmap_path or (inferred_repo / "docs" / "tech-roadmap.md")
@@ -194,11 +226,17 @@ def analyze_alignment(
 
     git_summary = get_git_summary(inferred_repo, include_diff=include_diff)
 
-    roadmap_text = _safe_read_text(roadmap)
-    charter_text = _safe_read_text(charter)
+    roadmap_text = safe_read_text(roadmap)
+    charter_text = safe_read_text(charter)
 
     roadmap_mentions = extract_file_mentions(roadmap_text)
     charter_mentions = extract_file_mentions(charter_text)
+
+    context_budget = get_review_context_budget(
+        repo_path=inferred_repo,
+        roadmap_path=roadmap,
+        charter_path=charter,
+    )
 
     unmapped_files = [
         f
@@ -206,7 +244,12 @@ def analyze_alignment(
         if f not in roadmap_mentions and f not in charter_mentions
     ]
 
-    recent_files = get_recent_active_files(db, limit=100)
+    changed_areas = sorted({f.split("/", 1)[0] for f in git_summary.changed_files if "/" in f})
+    changed_file_count = len(git_summary.changed_files)
+    area_count = len(changed_areas)
+
+    # Git-first: no editor telemetry required.
+    recent_files: list[str] = []
 
     questions: list[str] = []
     if unmapped_files:
@@ -215,17 +258,13 @@ def analyze_alignment(
             "Is this intentional exploration, or are we drifting from stated milestones?"
         )
 
-    if len(set(recent_files)) >= 8:
+    if changed_file_count >= 10 or area_count >= 3:
         questions.append(
-            "Your recent work spans many files. Is this creative exploration, "
-            "or did something pull you away from the current thread?"
+            "Your changes span many files/areas. Is this one coherent move, "
+            "or have multiple threads opened at once?"
         )
 
-    if git_summary.changed_files and not recent_files:
-        questions.append(
-            "There are uncommitted changes but no recent active editor events. "
-            "Are these changes coming from a tool/automation, or from another editor?"
-        )
+    # Intentionally avoids judging based on switching/telemetry. Keep questions plan-anchored.
 
     return {
         "status": "ok",
@@ -247,9 +286,31 @@ def analyze_alignment(
         "alignment": {
             "unmapped_changed_files": unmapped_files,
             "recent_active_files": recent_files[:20],
+            "scope": {
+                "changed_file_count": changed_file_count,
+                "changed_areas": changed_areas,
+                "area_count": area_count,
+            },
         },
         "questions": questions,
         "diff": git_summary.diff_text if include_diff else None,
+        "context_budget": {
+            "estimate": {
+                "context_limit_tokens": context_budget.context_limit_tokens,
+                "total_tokens": context_budget.total_tokens,
+                "utilization": context_budget.utilization,
+                "should_trigger": context_budget.should_trigger,
+                "roadmap_tokens": context_budget.roadmap_tokens,
+                "charter_tokens": context_budget.charter_tokens,
+                "changes_tokens": context_budget.changes_tokens,
+                "overhead_tokens": context_budget.overhead_tokens,
+            },
+            "note": (
+                "Token counts are heuristic estimates. Changes are estimated from "
+                "`git diff --numstat` (metadata-only) unless you opt into include_diff "
+                "in the alignment review itself."
+            ),
+        },
         "note": (
             "This analysis is heuristic and local-first. "
             "Default mode avoids capturing file contents; set include_diff=true to inspect patches."

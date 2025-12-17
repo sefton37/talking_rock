@@ -17,8 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..attention import get_current_session_summary
 from ..db import Database
+from ..git_poll import poll_git_repo
 
 
 class MainWindow(QMainWindow):
@@ -51,18 +51,21 @@ class MainWindow(QMainWindow):
         # Default proportions: nav (15%), chat (50%), inspection (35%)
         main_split.setSizes([288, 960, 672])
         layout.addWidget(main_split)
-        
-        # Refresh nav pane every 30 seconds to show current VSCode activity
+
+        self._last_review_trigger_id: str | None = None
+        self._last_alignment_trigger_id: str | None = None
+
+        # Refresh every 30 seconds to poll git + show repo status
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self._refresh_nav_pane)
         self.refresh_timer.start(30000)  # 30 second refresh
 
     def _create_nav_pane(self) -> QWidget:
-        """Left navigation pane: shows VSCode projects and attention metrics."""
+        """Left navigation pane: shows git repo status and checkpoint signals."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        title = QLabel("VSCode Projects")
+        title = QLabel("Git Repo")
         title.setStyleSheet(
             "font-weight: bold; font-size: 14px;"
         )
@@ -80,58 +83,101 @@ class MainWindow(QMainWindow):
         return widget
     
     def _refresh_nav_pane(self) -> None:
-        """Refresh navigation pane with current VSCode project data."""
+        """Refresh navigation pane with current git repo data."""
         try:
             db = Database()
-            summary = get_current_session_summary(db)
+            repo_summary = poll_git_repo()
             
             # Clear current list
             self.nav_list.clear()
-            
-            # Show status
-            status_text = summary.get("status", "no_activity")
-            if status_text == "no_activity":
-                item = QListWidgetItem("No active VSCode session")
+
+            status_text = repo_summary.get("status", "no_repo_detected")
+            if status_text != "ok":
+                item = QListWidgetItem("No git repo detected (set REOS_REPO_PATH)")
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
                 self.nav_list.addItem(item)
+                self._check_review_trigger(db)
                 return
-            
-            # Add fragmentation metric at top
-            frag = summary.get("fragmentation", {})
-            frag_score = frag.get("score", 0.0)
-            
-            frag_item = QListWidgetItem(f"Fragmentation: {frag_score:.1%}")
-            frag_item.setFlags(frag_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            self.nav_list.addItem(frag_item)
-            
-            # Add each project as a clickable item
-            projects = summary.get("projects", [])
-            
-            if not projects:
-                item = QListWidgetItem("No file activity yet")
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                self.nav_list.addItem(item)
-                return
-            
-            for project in projects:
-                name = project.get("name", "unknown")
-                file_count = project.get("file_count", 0)
-                duration = project.get("estimated_duration_seconds", 0)
-                
-                file_plural = "s" if file_count != 1 else ""
-                display_text = (
-                    f"{name}: {file_count} file{file_plural}, {int(duration // 60)}m"
-                )
-                item = QListWidgetItem(display_text)
-                item.setData(Qt.ItemDataRole.UserRole, name)  # Store project name
-                self.nav_list.addItem(item)
+
+            repo = repo_summary.get("repo", "")
+            branch = repo_summary.get("branch")
+            changed_files_count = repo_summary.get("changed_files_count", 0)
+
+            repo_item = QListWidgetItem(f"Repo: {repo}")
+            repo_item.setFlags(repo_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.nav_list.addItem(repo_item)
+
+            branch_text = branch if branch else "(detached)"
+            branch_item = QListWidgetItem(f"Branch: {branch_text}")
+            branch_item.setFlags(branch_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.nav_list.addItem(branch_item)
+
+            changes_item = QListWidgetItem(f"Working tree: {changed_files_count} changed files")
+            changes_item.setFlags(changes_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.nav_list.addItem(changes_item)
+
+            diff_stat = repo_summary.get("diff_stat")
+            if isinstance(diff_stat, str) and diff_stat:
+                stat_item = QListWidgetItem("Diffstat: " + diff_stat.replace("\n", " | "))
+                stat_item.setFlags(stat_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                self.nav_list.addItem(stat_item)
+
+            self._check_review_trigger(db)
                 
         except Exception as e:
-            item = QListWidgetItem(f"Error loading projects: {e}")
+            item = QListWidgetItem(f"Error loading repo: {e}")
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.nav_list.clear()
             self.nav_list.addItem(item)
-    
+
+    def _check_review_trigger(self, db: Database) -> None:
+        """If a new review-trigger event exists, append a checkpoint prompt."""
+        for evt in db.iter_events_recent(limit=50):
+            if evt.get("kind") != "review_trigger":
+                continue
+            evt_id = evt.get("id")
+            if isinstance(evt_id, str) and evt_id == self._last_review_trigger_id:
+                return
+
+            self._last_review_trigger_id = str(evt_id) if evt_id else None
+
+            utilization = None
+            try:
+                import json
+
+                payload_raw = evt.get("payload_metadata")
+                payload = json.loads(payload_raw) if isinstance(payload_raw, str) else {}
+                utilization = payload.get("utilization")
+            except Exception:
+                utilization = None
+
+            util_text = "" if not isinstance(utilization, int | float) else f" ({utilization:.0%})"
+            msg = (
+                "Your current changes + roadmap/charter may be nearing the review context budget"
+                f"{util_text}.\n"
+                "Want to checkpoint with `review_alignment` before the thread gets too large?"
+            )
+            self.chat_display.append(f"\nReOS: {msg}")
+            return
+
+        for evt in db.iter_events_recent(limit=50):
+            if evt.get("kind") != "alignment_trigger":
+                continue
+            evt_id = evt.get("id")
+            if isinstance(evt_id, str) and evt_id == self._last_alignment_trigger_id:
+                return
+
+            self._last_alignment_trigger_id = str(evt_id) if evt_id else None
+
+            msg = (
+                "Quick checkpoint: your current changes may be opening multiple threads "
+                "or drifting from the roadmap/charter.\n"
+                "Want to run `review_alignment` to compare changes against the "
+                "tech roadmap + charter?"
+            )
+            self.chat_display.append(f"\nReOS: {msg}")
+            return
+
     def _on_nav_item_clicked(self, item: QListWidgetItem) -> None:
         """Handle navigation item click: load project context."""
         project_name = item.data(Qt.ItemDataRole.UserRole)

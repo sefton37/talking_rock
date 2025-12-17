@@ -37,7 +37,7 @@ def test_db_insert_event(temp_db: Database) -> None:
     """Verify event insertion."""
     temp_db.insert_event(
         event_id="test-1",
-        source="vscode",
+        source="git",
         kind="active_editor",
         ts="2025-12-17T10:00:00Z",
         payload_metadata='{"uri": "file://test.py"}',
@@ -45,7 +45,7 @@ def test_db_insert_event(temp_db: Database) -> None:
     )
     rows = temp_db.iter_events_recent(limit=10)
     assert len(rows) == 1
-    assert rows[0]["source"] == "vscode"
+    assert rows[0]["source"] == "git"
     assert rows[0]["kind"] == "active_editor"
 
 
