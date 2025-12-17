@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from .db import get_db
+from .errors import record_error
+from .logging_setup import configure_logging
 from .models import (
     Event,
     EventIngestResponse,
@@ -22,6 +26,7 @@ from .tools import list_tools
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
     """Lifespan context for startup/shutdown."""
+    configure_logging()
     get_db().migrate()
     yield
 
@@ -34,6 +39,25 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger = logging.getLogger(__name__)
+    logger.exception("Unhandled exception in request %s %s", request.method, request.url.path)
+    record_error(
+        source="reos",
+        operation="fastapi_request",
+        exc=exc,
+        context={"method": request.method, "path": request.url.path},
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": "Internal error (local-only). See .reos-data/reos.log for details.",
+        },
+    )
 
 
 @app.get("/")

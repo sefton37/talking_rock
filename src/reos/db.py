@@ -40,7 +40,7 @@ class Database:
         """Create tables if they don't exist."""
         conn = self.connect()
 
-        # Events table: raw ingested metadata-only events from VS Code, git, etc.
+        # Events table: raw ingested metadata-only events (git snapshots, checkpoints, etc.)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS events (

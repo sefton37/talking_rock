@@ -7,6 +7,7 @@ Default behavior avoids capturing file contents; it only inspects git metadata
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
@@ -15,7 +16,11 @@ from typing import Any
 
 from .context_budget import ReviewContextBudget, build_review_context_budget, safe_read_text
 from .db import Database
+from .errors import record_error
+from .logging_setup import configure_logging
 from .settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -224,7 +229,22 @@ def analyze_alignment(
     roadmap = roadmap_path or (inferred_repo / "docs" / "tech-roadmap.md")
     charter = charter_path or (inferred_repo / "ReOS_charter.md")
 
-    git_summary = get_git_summary(inferred_repo, include_diff=include_diff)
+    configure_logging()
+    try:
+        git_summary = get_git_summary(inferred_repo, include_diff=include_diff)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to collect git summary")
+        record_error(
+            source="reos",
+            operation="analyze_alignment_get_git_summary",
+            exc=exc,
+            context={"repo": str(inferred_repo), "include_diff": include_diff},
+        )
+        return {
+            "status": "error",
+            "repo": {"path": str(inferred_repo)},
+            "message": str(exc),
+        }
 
     roadmap_text = safe_read_text(roadmap)
     charter_text = safe_read_text(charter)

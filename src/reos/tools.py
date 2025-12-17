@@ -29,7 +29,7 @@ def list_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="ingest_event",
-            description="Ingest a metadata-only event (e.g., from VS Code).",
+            description="Ingest a metadata-only event (e.g., from a local observer).",
             method="POST",
             path="/events",
             privacy="metadata-only by default",

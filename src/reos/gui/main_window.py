@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -18,7 +20,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..db import Database
+from ..errors import record_error
 from ..git_poll import poll_git_repo
+from ..logging_setup import configure_logging
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -85,6 +91,7 @@ class MainWindow(QMainWindow):
     def _refresh_nav_pane(self) -> None:
         """Refresh navigation pane with current git repo data."""
         try:
+            configure_logging()
             db = Database()
             repo_summary = poll_git_repo()
             
@@ -124,8 +131,10 @@ class MainWindow(QMainWindow):
 
             self._check_review_trigger(db)
                 
-        except Exception as e:
-            item = QListWidgetItem(f"Error loading repo: {e}")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to refresh nav pane")
+            record_error(source="reos", operation="gui_refresh_nav_pane", exc=exc)
+            item = QListWidgetItem(f"Error loading repo: {exc}")
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.nav_list.clear()
             self.nav_list.addItem(item)

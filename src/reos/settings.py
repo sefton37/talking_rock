@@ -16,6 +16,10 @@ class Settings:
     data_dir: Path = root_dir / ".reos-data"
     events_path: Path = data_dir / "events.jsonl"
     audit_path: Path = data_dir / "audit.log"
+    log_path: Path = data_dir / "reos.log"
+    log_level: str = os.environ.get("REOS_LOG_LEVEL", "INFO")
+    log_max_bytes: int = int(os.environ.get("REOS_LOG_MAX_BYTES", str(1_000_000)))
+    log_backup_count: int = int(os.environ.get("REOS_LOG_BACKUP_COUNT", "3"))
     host: str = os.environ.get("REOS_HOST", "127.0.0.1")
     port: int = int(os.environ.get("REOS_PORT", "8010"))
     ollama_url: str = os.environ.get("REOS_OLLAMA_URL", "http://127.0.0.1:11434")
