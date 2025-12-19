@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..agent import ChatAgent
+from ..commit_watch import poll_commits_and_review
 from ..db import Database, get_db
 from ..errors import record_error
 from ..git_poll import poll_git_repo
@@ -49,6 +50,32 @@ class _ChatAgentThread(QThread):
             self.error = str(exc)
 
 
+class _CommitReviewThread(QThread):
+    def __init__(self, *, db: Database) -> None:
+        super().__init__()
+        self._db = db
+        self.new_reviews: list[dict[str, object]] = []
+        self.error: str | None = None
+
+    def run(self) -> None:  # noqa: D401
+        try:
+            reviews = poll_commits_and_review(db=self._db)
+            self.new_reviews = [
+                {
+                    "event_id": r.event_id,
+                    "project_id": r.project_id,
+                    "repo_id": r.repo_id,
+                    "repo_path": r.repo_path,
+                    "commit_sha": r.commit_sha,
+                    "subject": r.subject,
+                    "review_text": r.review_text,
+                }
+                for r in reviews
+            ]
+        except Exception as exc:  # noqa: BLE001
+            self.error = str(exc)
+
+
 class MainWindow(QMainWindow):
     """ReOS desktop app: transparent AI reasoning in a 1080p window."""
 
@@ -62,6 +89,7 @@ class MainWindow(QMainWindow):
         self._projects_window: ProjectsWindow | None = None
         self._settings_window: SettingsWindow | None = None
         self._chat_thread: _ChatAgentThread | None = None
+        self._commit_thread: _CommitReviewThread | None = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -88,6 +116,7 @@ class MainWindow(QMainWindow):
 
         self._last_review_trigger_id: str | None = None
         self._last_alignment_trigger_id: str | None = None
+        self._last_commit_review_id: str | None = None
 
         # Refresh every 30 seconds to poll git + emit checkpoint prompts in chat
         self.refresh_timer = QTimer()
@@ -139,6 +168,12 @@ class MainWindow(QMainWindow):
             db = self._db
             repo_summary = poll_git_repo()
 
+            # Commit reviews can be slow (LLM). Run them in a background thread.
+            if self._commit_thread is None or not self._commit_thread.isRunning():
+                self._commit_thread = _CommitReviewThread(db=db)
+                self._commit_thread.finished.connect(self._on_commit_review_finished)
+                self._commit_thread.start()
+
             status_text = repo_summary.get("status", "no_repo_detected")
             if status_text != "ok":
                 self._check_review_trigger(db)
@@ -150,6 +185,37 @@ class MainWindow(QMainWindow):
             logger.exception("Failed to refresh nav pane")
             record_error(source="reos", operation="gui_refresh_nav_pane", exc=exc)
             self.chat_display.append(f"\nReOS: Error during refresh: {exc}")
+
+    def _on_commit_review_finished(self) -> None:
+        if self._commit_thread is None:
+            return
+
+        if self._commit_thread.error:
+            self.chat_display.append(
+                f"\nReOS: Commit review error: {self._commit_thread.error}"
+            )
+            return
+
+        for r in self._commit_thread.new_reviews:
+            event_id = r.get("event_id")
+            if isinstance(event_id, str) and event_id == self._last_commit_review_id:
+                continue
+            if isinstance(event_id, str):
+                self._last_commit_review_id = event_id
+
+            sha = r.get("commit_sha")
+            subject = r.get("subject")
+            review_text = r.get("review_text")
+            sha_short = sha[:10] if isinstance(sha, str) and len(sha) >= 10 else (sha or "")
+
+            headline = (
+                f"New commit review ({sha_short}): {subject}"
+                if isinstance(subject, str) and subject
+                else f"New commit review ({sha_short})"
+            )
+
+            body = review_text if isinstance(review_text, str) and review_text else "(no review text)"
+            self.chat_display.append(f"\nReOS: {headline}\n\n{body}")
 
     def _check_review_trigger(self, db: Database) -> None:
         """If a new review-trigger event exists, append a checkpoint prompt."""

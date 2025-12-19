@@ -138,6 +138,49 @@ def _git_numstat(repo_path: Path) -> str:
     return _run_git(repo_path, ["diff", "--numstat"]).strip()
 
 
+def get_head_sha(repo_path: Path) -> str:
+    """Return the current HEAD commit SHA."""
+
+    if not is_git_repo(repo_path):
+        raise RuntimeError(f"Not a git repository: {repo_path}")
+    return _run_git(repo_path, ["rev-parse", "HEAD"]).strip()
+
+
+def get_commit_subject(repo_path: Path, *, commit_sha: str) -> str:
+    """Return the subject line for a given commit."""
+
+    if not commit_sha:
+        raise ValueError("commit_sha is required")
+    return _run_git(repo_path, ["show", "-s", "--format=%s", commit_sha]).strip()
+
+
+def get_commit_patch(repo_path: Path, *, commit_sha: str, max_bytes: int = 1_000_000) -> str:
+    """Return the patch text for a given commit.
+
+    This reads commit content via `git show` and should only be used with explicit user opt-in.
+    """
+
+    if not commit_sha:
+        raise ValueError("commit_sha is required")
+
+    patch = _run_git(
+        repo_path,
+        [
+            "show",
+            "--no-color",
+            "--format=commit %H%nAuthor: %an <%ae>%nDate: %ad%nSubject: %s%n",
+            "--patch",
+            "--unified=3",
+            commit_sha,
+        ],
+    )
+
+    if len(patch.encode("utf-8", errors="ignore")) > max_bytes:
+        # Avoid runaway context sizes.
+        return patch[:max_bytes]
+    return patch
+
+
 def get_review_context_budget(
     *,
     repo_path: Path,

@@ -5,6 +5,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    val = raw.strip().lower()
+    if val in {"1", "true", "yes", "y", "on"}:
+        return True
+    if val in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Static settings for the local service.
@@ -24,6 +36,17 @@ class Settings:
     port: int = int(os.environ.get("REOS_PORT", "8010"))
     ollama_url: str = os.environ.get("REOS_OLLAMA_URL", "http://127.0.0.1:11434")
     ollama_model: str | None = os.environ.get("REOS_OLLAMA_MODEL")
+
+    # Commit code review (opt-in).
+    # When enabled, ReOS will read commit patches via `git show` and send them to the local LLM.
+    auto_review_commits: bool = _env_bool("REOS_AUTO_REVIEW_COMMITS", False)
+    auto_review_commits_include_diff: bool = _env_bool(
+        "REOS_AUTO_REVIEW_COMMITS_INCLUDE_DIFF",
+        False,
+    )
+    auto_review_commits_cooldown_seconds: int = int(
+        os.environ.get("REOS_AUTO_REVIEW_COMMITS_COOLDOWN_SECONDS", "5")
+    )
 
     # Git companion: which repo ReOS should observe.
     # If unset, ReOS will fall back to the workspace root if it's a git repo.

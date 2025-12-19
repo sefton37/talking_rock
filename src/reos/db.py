@@ -381,6 +381,17 @@ class Database:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_repo_path(self, *, repo_id: str) -> str | None:
+        """Resolve a discovered repo's path by id."""
+
+        row = self._execute("SELECT path FROM repos WHERE id = ?", (repo_id,)).fetchone()
+        if row is None:
+            return None
+        if isinstance(row, sqlite3.Row):
+            val = row["path"]
+            return str(val) if val is not None else None
+        return str(row[0]) if row[0] is not None else None
+
     def insert_project_charter(self, *, record: dict[str, str]) -> None:
         """Insert a project charter.
 
