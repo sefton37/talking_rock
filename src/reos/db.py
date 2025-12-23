@@ -5,6 +5,8 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .projects_fs import extract_repo_path, get_project_paths
+
 from .settings import settings
 
 
@@ -329,7 +331,28 @@ class Database:
         return self.get_project_charter(project_id=project_id)
 
     def get_active_project_repo_path(self) -> str | None:
-        """Resolve the active project's linked repo path."""
+        """Resolve the active project's linked repo path.
+
+        New (git-first) behavior:
+        - If active_project_id is set and a corresponding
+          projects/<project-id>/kb/settings.md exists, read `repoPath:` from it.
+
+        Backwards-compatible fallback:
+        - Use the legacy SQLite project_charter -> repos mapping.
+        """
+
+        active_project_id = self.get_active_project_id()
+        if isinstance(active_project_id, str) and active_project_id:
+            try:
+                paths = get_project_paths(active_project_id)
+                if paths.settings_md.exists():
+                    repo_path = extract_repo_path(paths.settings_md.read_text(encoding="utf-8", errors="replace"))
+                    if isinstance(repo_path, str) and repo_path.strip():
+                        return repo_path.strip()
+            except Exception:
+                # Fall through to legacy resolution.
+                pass
+
         project = self.get_active_project_charter()
         if project is None:
             return None

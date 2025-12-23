@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import subprocess
+from pathlib import Path
 from dataclasses import asdict, is_dataclass
 
 from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer
@@ -97,6 +100,7 @@ class MainWindow(QMainWindow):
         self._typing_row: QWidget | None = None
         self._typing_label: QLabel | None = None
         self._bubble_max_width_ratio: float = 0.78
+        self._last_assistant_text: str | None = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -133,11 +137,11 @@ class MainWindow(QMainWindow):
     def _create_nav_pane(self) -> QWidget:
         """Left navigation pane."""
         widget = QWidget()
-        widget.setStyleSheet("background-color: #e6e6e6;")
+        widget.setObjectName("reosNavPane")
         layout = QVBoxLayout(widget)
 
         title = QLabel("Navigation")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        title.setProperty("reosTitle", True)
         layout.addWidget(title)
 
         projects_btn = QPushButton("Projects")
@@ -163,7 +167,8 @@ class MainWindow(QMainWindow):
         bubble = QFrame()
         bubble.setFrameShape(QFrame.Shape.NoFrame)
         bubble.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        bubble.setProperty("reos_chat_bubble", True)
+        bubble.setProperty("reosChatBubble", True)
+        bubble.setProperty("reosRole", "user" if role == "user" else "reos")
 
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(12, 8, 12, 8)
@@ -175,17 +180,9 @@ class MainWindow(QMainWindow):
         bubble_layout.addWidget(label)
 
         if role == "user":
-            bubble.setStyleSheet(
-                "QFrame { background-color: #2b6cb0; border-radius: 12px; }"
-                "QLabel { color: white; }"
-            )
             row_layout.addStretch(1)
             row_layout.addWidget(bubble)
         else:
-            bubble.setStyleSheet(
-                "QFrame { background-color: #dd6b20; border-radius: 12px; }"
-                "QLabel { color: white; }"
-            )
             row_layout.addWidget(bubble)
             row_layout.addStretch(1)
 
@@ -211,7 +208,7 @@ class MainWindow(QMainWindow):
             return
 
         for bubble in self._chat_container.findChildren(QFrame):
-            if bubble.property("reos_chat_bubble") is True:
+            if bubble.property("reosChatBubble") is True:
                 bubble.setMaximumWidth(max_width)
 
     def _scroll_chat_to_bottom(self) -> None:
@@ -231,11 +228,8 @@ class MainWindow(QMainWindow):
         bubble = QFrame()
         bubble.setFrameShape(QFrame.Shape.NoFrame)
         bubble.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        bubble.setProperty("reos_chat_bubble", True)
-        bubble.setStyleSheet(
-            "QFrame { background-color: #dd6b20; border-radius: 12px; }"
-            "QLabel { color: white; }"
-        )
+        bubble.setProperty("reosChatBubble", True)
+        bubble.setProperty("reosRole", "reos")
 
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(12, 8, 12, 8)
@@ -364,34 +358,6 @@ class MainWindow(QMainWindow):
     def _check_review_trigger(self, db: Database) -> None:
         """If a new review-trigger event exists, append a checkpoint prompt."""
         for evt in db.iter_events_recent(limit=50):
-            if evt.get("kind") != "review_trigger":
-                continue
-            evt_id = evt.get("id")
-            if isinstance(evt_id, str) and evt_id == self._last_review_trigger_id:
-                return
-
-            self._last_review_trigger_id = str(evt_id) if evt_id else None
-
-            utilization = None
-            try:
-                import json
-
-                payload_raw = evt.get("payload_metadata")
-                payload = json.loads(payload_raw) if isinstance(payload_raw, str) else {}
-                utilization = payload.get("utilization")
-            except Exception:
-                utilization = None
-
-            util_text = "" if not isinstance(utilization, int | float) else f" ({utilization:.0%})"
-            msg = (
-                "Your current changes + roadmap/charter may be nearing the review context budget"
-                f"{util_text}.\n"
-                "Want to checkpoint with `review_alignment` before the thread gets too large?"
-            )
-            self._append_chat(role="reos", text=msg)
-            return
-
-        for evt in db.iter_events_recent(limit=50):
             if evt.get("kind") != "alignment_trigger":
                 continue
             evt_id = evt.get("id")
@@ -400,11 +366,66 @@ class MainWindow(QMainWindow):
 
             self._last_alignment_trigger_id = str(evt_id) if evt_id else None
 
+            project_id = None
+            repo_path = None
+            roadmap_path = None
+            charter_path = None
+            unmapped_count = None
+            changed_file_count = None
+            area_count = None
+            unmapped_examples: list[str] = []
+
+            try:
+                import json
+
+                payload_raw = evt.get("payload_metadata")
+                payload = json.loads(payload_raw) if isinstance(payload_raw, str) else {}
+
+                project_id = payload.get("project_id")
+                repo_path = payload.get("repo")
+                roadmap_path = (payload.get("roadmap") or {}).get("path") if isinstance(payload.get("roadmap"), dict) else None
+                charter_path = (payload.get("charter") or {}).get("path") if isinstance(payload.get("charter"), dict) else None
+
+                signals = payload.get("signals") if isinstance(payload.get("signals"), dict) else {}
+                unmapped_count = signals.get("unmapped_changed_files_count")
+                changed_file_count = signals.get("changed_file_count")
+                area_count = signals.get("area_count")
+
+                examples = payload.get("examples") if isinstance(payload.get("examples"), dict) else {}
+                unmapped_examples = examples.get("unmapped_changed_files") if isinstance(examples.get("unmapped_changed_files"), list) else []
+            except Exception:
+                pass
+
+            who = f"Project: {project_id}" if isinstance(project_id, str) and project_id else "Project: (not set)"
+            where = f"Repo: {repo_path}" if isinstance(repo_path, str) and repo_path else "Repo: (unknown)"
+            against = []
+            if isinstance(roadmap_path, str) and roadmap_path:
+                against.append(f"Roadmap: {roadmap_path}")
+            if isinstance(charter_path, str) and charter_path:
+                against.append(f"Charter: {charter_path}")
+            against_text = "\n".join(against) if against else "Roadmap/Charter: (not recorded)"
+
+            sig_bits: list[str] = []
+            if isinstance(unmapped_count, int | float):
+                sig_bits.append(f"unmapped files: {int(unmapped_count)}")
+            if isinstance(changed_file_count, int | float):
+                sig_bits.append(f"changed files: {int(changed_file_count)}")
+            if isinstance(area_count, int | float):
+                sig_bits.append(f"areas: {int(area_count)}")
+            sig_line = ", ".join(sig_bits) if sig_bits else "(no signal summary available)"
+
+            examples_line = ""
+            if unmapped_examples:
+                sample = ", ".join(str(x) for x in unmapped_examples[:5])
+                examples_line = f"\nExamples (unmapped): {sample}"
+
             msg = (
-                "Quick checkpoint: your current changes may be opening multiple threads "
-                "or drifting from the roadmap/charter.\n"
-                "Want to run `review_alignment` to compare changes against the "
-                "tech roadmap + charter?"
+                "Quick checkpoint (metadata-only):\n"
+                f"{who}\n"
+                f"{where}\n"
+                f"{against_text}\n"
+                f"Signals: {sig_line}{examples_line}\n\n"
+                "Want to run `review_alignment` for the full report?"
             )
             self._append_chat(role="reos", text=msg)
             return
@@ -438,7 +459,7 @@ class MainWindow(QMainWindow):
 
         # Input area
         input_label = QLabel("You:")
-        input_label.setStyleSheet("font-weight: bold;")
+        input_label.setProperty("reosTitle", True)
         layout.addWidget(input_label)
 
         self.chat_input = QLineEdit()
@@ -455,19 +476,18 @@ class MainWindow(QMainWindow):
     def _create_inspection_pane(self) -> QWidget:
         """Right inspection pane: click on AI responses to see reasoning."""
         widget = QWidget()
+        widget.setObjectName("reosInspectionPane")
         layout = QVBoxLayout(widget)
 
         title = QLabel("Inspection Pane")
-        title.setStyleSheet(
-            "font-weight: bold; font-size: 14px;"
-        )
+        title.setProperty("reosTitle", True)
         layout.addWidget(title)
 
         info = QLabel(
             "(Click on an AI message in the chat to inspect "
             "its reasoning trail)"
         )
-        info.setStyleSheet("color: #666; font-size: 11px;")
+        info.setProperty("reosMuted", True)
         layout.addWidget(info)
 
         self.inspection_display = QTextEdit()
@@ -478,6 +498,11 @@ class MainWindow(QMainWindow):
         )
         self.inspection_display.setText(default_text)
         layout.addWidget(self.inspection_display, stretch=1)
+
+        self.apply_patch_btn = QPushButton("Preview/Apply Patch")
+        self.apply_patch_btn.setEnabled(False)
+        self.apply_patch_btn.clicked.connect(self._on_preview_apply_patch)
+        layout.addWidget(self.apply_patch_btn)
 
         return widget
 
@@ -524,6 +549,8 @@ class MainWindow(QMainWindow):
 
         answer = thread.answer or "(no response)"
         self._append_chat(role="reos", text=answer)
+        self._last_assistant_text = answer
+        self.apply_patch_btn.setEnabled(bool(self._extract_unified_diff(answer)))
 
         trace = thread.trace
         try:
@@ -540,3 +567,131 @@ class MainWindow(QMainWindow):
         except Exception:
             trace_json = str(trace)
         self.inspection_display.setText(trace_json)
+
+    def _extract_unified_diff(self, text: str) -> str | None:
+        """Extract a unified diff from assistant text.
+
+        Supports:
+        - fenced codeblocks: ```diff ... ```
+        - raw patches starting with 'diff --git'
+        """
+
+        if not text.strip():
+            return None
+
+        fence = re.search(r"```(?:diff|patch)\n(.*?)\n```", text, flags=re.DOTALL | re.IGNORECASE)
+        if fence:
+            payload = fence.group(1).strip("\n")
+            return payload or None
+
+        raw = re.search(r"(diff --git[\s\S]+)", text)
+        if raw:
+            payload = raw.group(1).strip("\n")
+            return payload or None
+
+        return None
+
+    def _patch_targets_are_kb_only(self, patch_text: str) -> bool:
+        """Return True iff all changed paths are under projects/<id>/kb/."""
+
+        # Extract paths from +++/--- lines; accept both a/ and b/ prefixes.
+        paths: set[str] = set()
+        for line in patch_text.splitlines():
+            if line.startswith("+++ ") or line.startswith("--- "):
+                _, p = line.split(" ", 1)
+                p = p.strip()
+                if p in {"/dev/null"}:
+                    continue
+                if p.startswith("a/") or p.startswith("b/"):
+                    p = p[2:]
+                paths.add(p)
+
+        if not paths:
+            # If we can't determine targets safely, deny.
+            return False
+
+        for p in paths:
+            if not p.startswith("projects/"):
+                return False
+            if "/kb/" not in p:
+                return False
+        return True
+
+    def _on_preview_apply_patch(self) -> None:
+        patch = self._extract_unified_diff(self._last_assistant_text or "")
+        if not patch:
+            return
+
+        if not self._patch_targets_are_kb_only(patch):
+            self._append_chat(
+                role="reos",
+                text=(
+                    "I found a patch, but it targets files outside `projects/<id>/kb/`, "
+                    "so I won't apply it automatically."
+                ),
+            )
+            return
+
+        # Preview in a dialog and apply via `git apply` only on explicit confirmation.
+        from PySide6.QtWidgets import QDialog  # local import to avoid GUI cycles
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Preview/Apply Patch")
+        root = QVBoxLayout(dlg)
+
+        info = QLabel("This will apply the patch to your ReOS workspace (ready to commit).")
+        info.setStyleSheet("color: #666; font-size: 11px;")
+        root.addWidget(info)
+
+        box = QTextEdit()
+        box.setReadOnly(True)
+        box.setPlainText(patch)
+        box.setMinimumSize(900, 520)
+        root.addWidget(box, stretch=1)
+
+        buttons = QHBoxLayout()
+        root.addLayout(buttons)
+        buttons.addStretch(1)
+
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(dlg.reject)
+        buttons.addWidget(cancel)
+
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(dlg.accept)
+        buttons.addWidget(apply_btn)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        repo_root = Path(__file__).resolve().parents[3]
+        try:
+            check = subprocess.run(
+                ["git", "apply", "--check", "-"],
+                input=patch,
+                text=True,
+                cwd=repo_root,
+                capture_output=True,
+                check=False,
+            )
+            if check.returncode != 0:
+                self._append_chat(role="reos", text=f"Patch check failed:\n{check.stderr or check.stdout}")
+                return
+
+            res = subprocess.run(
+                ["git", "apply", "-"],
+                input=patch,
+                text=True,
+                cwd=repo_root,
+                capture_output=True,
+                check=False,
+            )
+            if res.returncode != 0:
+                self._append_chat(role="reos", text=f"Patch apply failed:\n{res.stderr or res.stdout}")
+                return
+
+        except Exception as exc:  # noqa: BLE001
+            self._append_chat(role="reos", text=f"Patch apply error: {exc}")
+            return
+
+        self._append_chat(role="reos", text="Patch applied to KB files (ready to commit).")

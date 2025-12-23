@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from ..errors import record_error
 from ..logging_setup import configure_logging
+from .style import apply_global_style
 from .main_window import MainWindow
 
 
@@ -28,6 +29,7 @@ def main() -> None:
     configure_logging()
     _install_exception_hook()
     app = QApplication(sys.argv)
+    apply_global_style(app)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

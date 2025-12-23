@@ -84,7 +84,7 @@ class SettingsWidget(QWidget):
         self._build_personas_tab(self._personas_tab)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color: #666; font-size: 11px;")
+        self.status.setProperty("reosMuted", True)
         root.addWidget(self.status)
 
         self.refresh()
@@ -100,7 +100,7 @@ class SettingsWidget(QWidget):
         layout = QVBoxLayout(tab)
 
         header = QLabel("Ollama")
-        header.setStyleSheet("font-weight: bold; font-size: 14px;")
+        header.setProperty("reosTitle", True)
         layout.addWidget(header)
 
         form = QFormLayout()
@@ -131,7 +131,7 @@ class SettingsWidget(QWidget):
         btn_row.addWidget(self.ollama_save_btn)
 
         self.ollama_status = QLabel("")
-        self.ollama_status.setStyleSheet("color: #666; font-size: 11px;")
+        self.ollama_status.setProperty("reosMuted", True)
         layout.addWidget(self.ollama_status)
 
         layout.addStretch()
@@ -222,7 +222,7 @@ class SettingsWidget(QWidget):
         layout.addLayout(left, stretch=1)
 
         header = QLabel("Personas")
-        header.setStyleSheet("font-weight: bold; font-size: 14px;")
+        header.setProperty("reosTitle", True)
         left.addWidget(header)
 
         self.persona_list = QListWidget()
@@ -247,7 +247,7 @@ class SettingsWidget(QWidget):
         layout.addLayout(right, stretch=2)
 
         self.active_persona_label = QLabel("Active persona: —")
-        self.active_persona_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.active_persona_label.setProperty("reosMuted", True)
         right.addWidget(self.active_persona_label)
 
         form = QFormLayout()

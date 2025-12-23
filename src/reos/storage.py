@@ -4,6 +4,7 @@ import json
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from .alignment import get_default_repo_path, get_review_context_budget, is_git_repo
 from .db import Database, get_db
@@ -30,8 +31,6 @@ def append_event(event: Event) -> str:
             payload_metadata=json.dumps(event.payload_metadata) if event.payload_metadata else None,
             note=event.note,
         )
-
-        _maybe_emit_review_trigger(db=db, recent_event_payload=event.payload_metadata)
         _maybe_emit_alignment_trigger(db=db, recent_event_payload=event.payload_metadata)
         return event_id
     except Exception as exc:
@@ -144,7 +143,15 @@ def _maybe_emit_alignment_trigger(
     """
 
     try:
-        repo_path = get_default_repo_path()
+        # Prefer the active project's repoPath (from projects/<id>/kb/settings.md).
+        repo_path: Path | None = None
+        active_repo = db.get_active_project_repo_path()
+        if isinstance(active_repo, str) and active_repo.strip():
+            repo_path = Path(active_repo).resolve()
+
+        if repo_path is None:
+            repo_path = get_default_repo_path()
+
         if repo_path is None or not is_git_repo(repo_path):
             return
 
@@ -163,6 +170,7 @@ def _maybe_emit_alignment_trigger(
         # Compute metadata-only alignment signals.
         from .alignment import analyze_alignment
 
+        # analyze_alignment is project-aware and will prefer KB roadmap/charter when present.
         report = analyze_alignment(db=db, repo_path=repo_path, include_diff=False)
         alignment = report.get("alignment", {}) if isinstance(report, dict) else {}
         unmapped = alignment.get("unmapped_changed_files", [])
@@ -181,9 +189,17 @@ def _maybe_emit_alignment_trigger(
         if not should_trigger:
             return
 
+        project_id = db.get_active_project_id()
+        repo_info = report.get("repo", {}) if isinstance(report, dict) else {}
+        roadmap_info = report.get("roadmap", {}) if isinstance(report, dict) else {}
+        charter_info = report.get("charter", {}) if isinstance(report, dict) else {}
+
         payload = {
             "kind": "alignment_trigger",
-            "repo": str(repo_path),
+            "project_id": project_id if isinstance(project_id, str) and project_id else None,
+            "repo": str(repo_info.get("path") or repo_path),
+            "roadmap": {"path": str(roadmap_info.get("path") or "")},
+            "charter": {"path": str(charter_info.get("path") or "")},
             "signals": {
                 "unmapped_changed_files_count": unmapped_count,
                 "changed_file_count": changed_file_count,
