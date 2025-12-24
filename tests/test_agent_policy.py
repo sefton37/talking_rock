@@ -61,7 +61,7 @@ def test_agent_strips_include_diff_when_not_opted_in(
     }
 
     agent = ChatAgent(db=get_db(), ollama=FakeOllama(tool_plan_json=json.dumps(tool_plan)))
-    _answer, _trace = agent.respond("How does the repo look?")
+    _answer = agent.respond("How does the repo look?")
 
     assert any(c["name"] == "reos_git_summary" for c in calls)
     git_call = next(c for c in calls if c["name"] == "reos_git_summary")
@@ -91,7 +91,7 @@ def test_agent_allows_include_diff_when_user_opts_in(
     }
 
     agent = ChatAgent(db=get_db(), ollama=FakeOllama(tool_plan_json=json.dumps(tool_plan)))
-    _answer, _trace = agent.respond("Please include diff in the git summary")
+    _answer = agent.respond("Please include diff in the git summary")
 
     git_call = next(c for c in calls if c["name"] == "reos_git_summary")
     assert git_call["arguments"].get("include_diff") is True
@@ -122,7 +122,7 @@ def test_agent_respects_tool_call_limit(
     }
 
     agent = ChatAgent(db=get_db(), ollama=FakeOllama(tool_plan_json=json.dumps(tool_plan)))
-    _answer, _trace = agent.respond("What tools do you need?")
+    _answer = agent.respond("What tools do you need?")
 
     assert len(calls) == 1
 
@@ -144,7 +144,7 @@ def test_agent_falls_back_on_invalid_json_tool_plan(
     monkeypatch.setattr(agent_mod, "call_tool", fake_call_tool)
 
     agent = ChatAgent(db=get_db(), ollama=FakeOllama(tool_plan_json="not json"))
-    _answer, _trace = agent.respond("Hello")
+    _answer = agent.respond("Hello")
 
     # Fallback should attempt charter + git summary.
     assert calls[:2] == ["reos_project_charter_get", "reos_git_summary"]

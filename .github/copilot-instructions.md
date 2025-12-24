@@ -12,7 +12,7 @@ ReOS is **not** a task manager and **not** a surveillance tool. It is a memory +
 
 ### Current Architecture (Git-First)
 
-**Tech Stack**: Python 3.12 (local kernel), PySide6 (current ReOS GUI), Tauri+Vite+TypeScript (UI migration in progress), FastAPI (optional local event service), Ollama (local LLM), SQLite (local persistence), Git CLI.
+**Tech Stack**: Python 3.12 (local kernel), Tauri+Vite+TypeScript (desktop UI), FastAPI (optional local event service), Ollama (local LLM), SQLite (local persistence), Git CLI.
 
 **Key Components**:
 1. **Git Observer** (Primary Observer)
@@ -21,9 +21,8 @@ ReOS is **not** a task manager and **not** a surveillance tool. It is a memory +
    - File: `src/reos/git_poll.py`
 
 2. **ReOS Desktop App** (Companion + Reflection)
-   - 3-pane layout: repos | reflection | inspection (reasoning trail).
-   - Surfaces gentle checkpoints when changes suggest drift or too many threads.
-   - Files: `src/reos/gui/main_window.py`, `src/reos/gui/__init__.py`
+   - TypeScript/Tauri desktop shell that spawns a Python kernel over stdio JSON-RPC.
+   - Files: `apps/reos-tauri/`, `src/reos/ui_rpc_server.py`
 
 3. **SQLite Core** (Single Source of Truth)
    - Stores git snapshots + checkpoint events + user notes.
@@ -37,9 +36,8 @@ ReOS is **not** a task manager and **not** a surveillance tool. It is a memory +
    - All reasoning local; no cloud calls.
    - File: `src/reos/ollama.py`
 
-6. **TypeScript Desktop Shell (Tauri) — In Progress**
-   - Minimal TS UI scaffold that spawns a Python kernel over stdio JSON-RPC.
-   - Current capability: `chat/respond` + trace rendering (not yet feature parity with PySide6).
+6. **TypeScript Desktop Shell (Tauri)**
+   - Desktop UI that spawns a Python kernel over stdio JSON-RPC.
    - Files: `apps/reos-tauri/`, `src/reos/ui_rpc_server.py`
 
 ### Design Principles
@@ -68,7 +66,7 @@ ReOS is **not** a task manager and **not** a surveillance tool. It is a memory +
 
 **Code Style & Validation**:
 - `ruff check` (100-char lines, sorted imports, PEP8)
-- `mypy src/ --ignore-missing-imports` (PySide6 stubs are sparse)
+- `mypy src/ --ignore-missing-imports`
 - `pytest` before commit (5 tests must pass)
 - Use `collections.abc.Callable`, not `typing.Callable`
 - Add docstrings and type hints to all public functions
@@ -95,12 +93,9 @@ ReOS is **not** a task manager and **not** a surveillance tool. It is a memory +
 - Events table: populated by git observer snapshots and checkpoint triggers
 - Fresh DB per test (avoid threading issues)
 
-**ReOS Desktop App (PySide6)**:
-- Left nav pane: observed repos/sessions (clickable, load context)
-- Center: real-time attention dashboard + reflection chat
-- Right inspection pane: click on insight → show reasoning (system prompt + LLM output + tools called)
-- Proactive prompts: "8 switches in 5 min—settle on one file?" (compassionate, not demanding)
-- No gamified UI; no streaks, scores, or "levels"
+**ReOS Desktop App (Tauri)**:
+- Desktop shell under `apps/reos-tauri/` that calls into the Python kernel over stdio JSON-RPC.
+- Keep the UI compassionate, non-prescriptive, and local-first.
 
 **Attention Classification** (Coming):
 - Track context switching signals (optionally from editor events; Git remains primary)
@@ -146,14 +141,8 @@ Result: Your editor stays primary; ReOS stays a quiet companion that helps you r
 ### Running & Testing
 
 ```bash
-# ReOS Desktop App
-python -m reos.gui          # Launch app
-reos-gui                     # (same, via script entry)
-
-# TypeScript Desktop App (Tauri) — migration in progress
-cd apps/reos-tauri
-npm install
-npm run tauri:dev
+# ReOS Desktop App (Tauri)
+./reos
 
 # FastAPI Service (feeds events into SQLite)
 python -m reos.app          # Runs on http://127.0.0.1:8010
@@ -171,7 +160,6 @@ mypy src/ --ignore-missing-imports  # Type checking
 | File | Purpose | Team |
 |------|---------|------|
 | `src/reos/git_poll.py` | Git observer polling and snapshot events | Core |
-| `src/reos/gui/main_window.py` | ReOS 3-pane layout | GUI |
 | `src/reos/commands.py` | Attention introspection commands | Core |
 | `src/reos/db.py` | SQLite schema (events, sessions, classifications) | Core |
 | `src/reos/ollama.py` | Local LLM client | Core |

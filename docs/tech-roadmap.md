@@ -22,7 +22,7 @@ ReOS is a **Git-companion intelligence system**:
 ### Assumptions
 
 - OS: Linux; dual-window workflow (editor + ReOS).
-- Language: Python 3.12.3 (backend/reasoning); PySide6 for ReOS UI.
+- Language: Python 3.12.3 (kernel/reasoning); TypeScript/Tauri for ReOS UI.
 - Ollama runs locally; model user-selected.
 - Git is the primary data collector; ReOS is the companion + reflection layer.
 - All events flow through SQLite; no direct cloud calls.
@@ -79,8 +79,8 @@ ReOS is a **Git-companion intelligence system**:
 ### Development Workflow
 
 - Tooling: ruff, mypy, pytest (already set up).
-- Backend: `python -m reos.gui` (desktop app), `python -m reos.app` (service), `python -m pytest` (tests).
-- Dependencies: PySide6, Ollama (local).
+- Desktop UI: `./reos` (Tauri dev UI), `python -m reos.app` (service), `python -m pytest` (tests).
+- Dependencies: Ollama (local), plus Tauri prerequisites for the desktop shell.
 
 ### Key Design Decisions
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import json
 import subprocess
 from datetime import UTC, datetime
@@ -75,62 +74,3 @@ def test_alignment_trigger_payload_includes_project_and_paths(
     unmapped_examples = examples.get("unmapped_changed_files")
     assert isinstance(unmapped_examples, list)
     assert any("unmapped_payload_" in str(x) for x in unmapped_examples)
-
-
-@pytest.fixture
-def qapp():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication([])
-    yield app
-
-
-def test_gui_alignment_trigger_message_mentions_context(
-    active_project_repo: Path,
-    isolated_db_singleton: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    qapp,
-) -> None:
-    repo = active_project_repo
-
-    created: list[Path] = []
-    for i in range(6):
-        p = repo / "src" / "reos" / f"unmapped_gui_{i}.py"
-        p.write_text(f"# unmapped gui {i}\n", encoding="utf-8")
-        created.append(p)
-
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True, text=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-m", "add unmapped gui files"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    for p in created:
-        p.write_text(p.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
-
-    import reos.storage as storage_mod
-
-    monkeypatch.setattr(storage_mod, "get_default_repo_path", lambda: repo)
-
-    append_event(Event(source="test", ts=datetime.now(UTC), payload_metadata={"kind": "smoke"}))
-
-    from reos.db import get_db
-    from reos.gui.main_window import MainWindow
-    from PySide6.QtWidgets import QLabel
-
-    w = MainWindow()
-    try:
-        w._check_review_trigger(get_db())
-
-        texts = [lbl.text() for lbl in w.findChildren(QLabel)]
-    finally:
-        w.close()
-
-    assert any("Quick checkpoint" in t for t in texts)
-    assert any("Project:" in t for t in texts)
-    assert any("Repo:" in t for t in texts)
-    assert any("Roadmap:" in t for t in texts)
-    assert any("Charter:" in t for t in texts)

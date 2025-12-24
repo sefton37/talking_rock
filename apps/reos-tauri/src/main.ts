@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { z } from 'zod';
 
+import './style.css';
+
 const JsonRpcResponseSchema = z.object({
   jsonrpc: z.literal('2.0'),
   id: z.union([z.string(), z.number(), z.null()]).optional(),
@@ -16,7 +18,6 @@ const JsonRpcResponseSchema = z.object({
 
 type ChatRespondResult = {
   answer: string;
-  trace: unknown;
 };
 
 type ProjectsListResult = {
@@ -50,9 +51,6 @@ type KbWriteApplyResult = {
   sha256_current: string;
 };
 
-type EventsRecentResult = {
-  events: Array<{ id: string; source: string; kind: string | null; ts: string; payload_metadata: string | null }>;
-};
 
 async function kernelRequest(method: string, params: unknown): Promise<unknown> {
   const raw = await invoke('kernel_request', { method, params });
@@ -76,11 +74,13 @@ function buildUi() {
   root.innerHTML = '';
 
   const shell = el('div');
+  shell.className = 'shell';
   shell.style.display = 'flex';
   shell.style.height = '100vh';
   shell.style.fontFamily = 'system-ui, sans-serif';
 
   const nav = el('div');
+  nav.className = 'nav';
   nav.style.width = '240px';
   nav.style.borderRight = '1px solid #ddd';
   nav.style.padding = '12px';
@@ -111,56 +111,47 @@ function buildUi() {
   kbList.style.flexDirection = 'column';
   kbList.style.gap = '6px';
 
-  const eventsHeader = el('div');
-  eventsHeader.textContent = 'Events';
-  eventsHeader.style.marginTop = '12px';
-  eventsHeader.style.fontWeight = '600';
-
-  const refreshEvents = el('button');
-  refreshEvents.textContent = 'Refresh';
-
-  const eventsList = el('div');
-  eventsList.style.display = 'flex';
-  eventsList.style.flexDirection = 'column';
-  eventsList.style.gap = '6px';
 
   nav.appendChild(navTitle);
   nav.appendChild(projectsHeader);
   nav.appendChild(projectsList);
   nav.appendChild(kbHeader);
   nav.appendChild(kbList);
-  nav.appendChild(eventsHeader);
-  nav.appendChild(refreshEvents);
-  nav.appendChild(eventsList);
 
   const center = el('div');
+  center.className = 'center';
   center.style.flex = '1';
   center.style.display = 'flex';
   center.style.flexDirection = 'column';
 
   const chatLog = el('div');
+  chatLog.className = 'chat-log';
   chatLog.style.flex = '1';
   chatLog.style.padding = '12px';
   chatLog.style.overflow = 'auto';
 
   const inputRow = el('div');
+  inputRow.className = 'input-row';
   inputRow.style.display = 'flex';
   inputRow.style.gap = '8px';
   inputRow.style.padding = '12px';
   inputRow.style.borderTop = '1px solid #ddd';
 
   const input = el('input');
+  input.className = 'chat-input';
   input.type = 'text';
   input.placeholder = 'Type a message…';
   input.style.flex = '1';
 
   const send = el('button');
+  send.className = 'send-btn';
   send.textContent = 'Send';
 
   inputRow.appendChild(input);
   inputRow.appendChild(send);
 
   const inspection = el('div');
+  inspection.className = 'inspection';
   inspection.style.width = '420px';
   inspection.style.borderLeft = '1px solid #ddd';
   inspection.style.margin = '0';
@@ -188,14 +179,36 @@ function buildUi() {
 
   function append(role: 'user' | 'reos', text: string) {
     const row = el('div');
-    row.style.marginBottom = '10px';
-    row.textContent = `${role}: ${text}`;
+    row.className = `chat-row ${role}`;
+
+    const bubble = el('div');
+    bubble.className = `chat-bubble ${role}`;
+    bubble.textContent = text;
+
+    row.appendChild(bubble);
     chatLog.appendChild(row);
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
+  function appendThinking(): { row: HTMLDivElement; bubble: HTMLDivElement } {
+    const row = el('div') as HTMLDivElement;
+    row.className = 'chat-row reos';
+
+    const bubble = el('div') as HTMLDivElement;
+    bubble.className = 'chat-bubble reos thinking';
+
+    const dots = el('span') as HTMLSpanElement;
+    dots.className = 'typing-dots';
+    dots.innerHTML = '<span></span><span></span><span></span>';
+    bubble.appendChild(dots);
+
+    row.appendChild(bubble);
+    chatLog.appendChild(row);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    return { row, bubble };
+  }
+
   let activeProjectId: string | null = null;
-  let lastTrace: unknown = null;
 
   function showJsonInInspector(title: string, obj: unknown) {
     inspectionTitle.textContent = title;
@@ -374,27 +387,6 @@ function buildUi() {
     }
   }
 
-  async function refreshEventsList() {
-    eventsList.innerHTML = '';
-    const res = (await kernelRequest('events/recent', { limit: 25 })) as EventsRecentResult;
-    for (const ev of res.events ?? []) {
-      const btn = el('button');
-      const kind = ev.kind ?? 'event';
-      btn.textContent = `${kind}`;
-      btn.title = `${ev.ts} (${ev.source})`;
-      btn.addEventListener('click', () => {
-        showJsonInInspector(`Event: ${ev.id}`, ev);
-      });
-      eventsList.appendChild(btn);
-    }
-
-    if ((res.events ?? []).length === 0) {
-      const empty = el('div');
-      empty.textContent = '(no events)';
-      empty.style.opacity = '0.7';
-      eventsList.appendChild(empty);
-    }
-  }
 
   async function onSend() {
     const text = input.value.trim();
@@ -402,10 +394,17 @@ function buildUi() {
     input.value = '';
     append('user', text);
 
-    const res = (await kernelRequest('chat/respond', { text })) as ChatRespondResult;
-    append('reos', res.answer ?? '(no answer)');
-    lastTrace = res.trace ?? null;
-    showJsonInInspector('Trace', lastTrace);
+    // Immediately show an empty ReOS bubble with a thinking animation.
+    const pending = appendThinking();
+
+    try {
+      const res = (await kernelRequest('chat/respond', { text })) as ChatRespondResult;
+      pending.bubble.classList.remove('thinking');
+      pending.bubble.textContent = res.answer ?? '(no answer)';
+    } catch (e) {
+      pending.bubble.classList.remove('thinking');
+      pending.bubble.textContent = `Error: ${String(e)}`;
+    }
   }
 
   send.addEventListener('click', () => void onSend());
@@ -413,14 +412,11 @@ function buildUi() {
     if (e.key === 'Enter') void onSend();
   });
 
-  refreshEvents.addEventListener('click', () => void refreshEventsList());
-
   // Initial load
   void (async () => {
     try {
       await refreshProjects();
       await refreshKb();
-      await refreshEventsList();
     } catch (e) {
       showJsonInInspector('Startup error', { error: String(e) });
     }

@@ -16,7 +16,7 @@ fi
 
 repo_root="$(cd "$(dirname "$script_source")" && pwd)"
 
-ui_mode="auto" # auto|pyside|tauri
+ui_mode="tauri" # tauri
 
 free_vite_port_if_needed() {
   local port=1420
@@ -114,22 +114,20 @@ if [[ "${1:-}" == "--tauri" ]]; then
 fi
 
 if [[ "${1:-}" == "--pyside" ]]; then
-  ui_mode="pyside"
-  shift
+  echo "ReOS: PySide6 GUI has been retired. Use: ./reos --ui tauri" >&2
+  exit 2
 fi
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'EOF'
 Usage:
-  ./reos                       # launch ReOS desktop UI (auto)
+  ./reos                       # launch TypeScript/Tauri UI (dev)
   ./reos --ui tauri            # launch TypeScript/Tauri UI (dev)
-  ./reos --ui pyside           # launch PySide6 UI
   ./reos --service             # launch ReOS local service (FastAPI)
   ./reos --mcp                 # launch ReOS MCP server (stdio)
 
 Aliases:
   ./reos --tauri
-  ./reos --pyside
 
 Notes:
   - Set REOS_REPO_PATH=/path/to/repo to choose which repo to observe.
@@ -145,53 +143,24 @@ if [[ "$mode" == "gui" ]]; then
     exit 2
   fi
 
-  if [[ "$ui_mode" == "tauri" ]]; then
-    if ! can_launch_tauri; then
-      echo "ReOS: cannot launch Tauri UI (missing prerequisites)." >&2
-      echo "Required: npm + Rust toolchain + pkg-config + webkit2gtk, plus apps/reos-tauri." >&2
-      echo "On Ubuntu/Debian, run: $repo_root/install-tauri-deps.sh" >&2
-      exit 4
-    fi
-
-    "$repo_root/scripts/bootstrap.sh" >/dev/null
-    free_vite_port_if_needed
-
-    echo "ReOS: launching TypeScript/Tauri UI (dev)…" >&2
-    cd "$repo_root/apps/reos-tauri"
-    exec npm run tauri:dev
+  if [[ "$ui_mode" != "tauri" ]]; then
+    echo "ReOS: unsupported UI mode '$ui_mode'. Supported: tauri" >&2
+    exit 2
   fi
 
-  if [[ "$ui_mode" == "auto" ]]; then
-    if can_launch_tauri; then
-      "$repo_root/scripts/bootstrap.sh" >/dev/null
-      free_vite_port_if_needed
-
-      echo "ReOS: launching TypeScript/Tauri UI (dev)…" >&2
-      cd "$repo_root/apps/reos-tauri"
-      exec npm run tauri:dev
-    fi
+  if ! can_launch_tauri; then
+    echo "ReOS: cannot launch Tauri UI (missing prerequisites)." >&2
+    echo "Required: npm + Rust toolchain + pkg-config + webkit2gtk, plus apps/reos-tauri." >&2
+    echo "On Ubuntu/Debian, run: $repo_root/install-tauri-deps.sh" >&2
+    exit 4
   fi
 
-  # Qt xcb platform plugin depends on libxcb-cursor on many Debian/Ubuntu installs.
-  # If it's missing, PySide6 will abort with: "Could not load the Qt platform plugin xcb".
-  if command -v ldconfig >/dev/null 2>&1; then
-    # NOTE: This script uses `set -o pipefail`. When `grep -q` finds a match it exits
-    # early, which can SIGPIPE `ldconfig` and cause the pipeline to have a non-zero
-    # status even though the library is present. Disable pipefail for this probe.
-    if ! (
-      set +o pipefail
-      ldconfig -p 2>/dev/null | grep -qi 'libxcb-cursor\.so\.0'
-    ); then
-      if command -v apt-get >/dev/null 2>&1; then
-        echo "ReOS: missing system dependency for GUI (libxcb-cursor)." >&2
-        echo "Fix: sudo apt update && sudo apt install -y libxcb-cursor0" >&2
-        echo "Or run without GUI: ./reos --service" >&2
-        exit 3
-      fi
-    fi
-  fi
+  "$repo_root/scripts/bootstrap.sh" >/dev/null
+  free_vite_port_if_needed
 
-  exec "$python_bin" -m reos.gui "$@"
+  echo "ReOS: launching TypeScript/Tauri UI (dev)…" >&2
+  cd "$repo_root/apps/reos-tauri"
+  exec npm run tauri:dev
 elif [[ "$mode" == "mcp" ]]; then
   exec "$python_bin" -m reos.mcp "$@"
 else

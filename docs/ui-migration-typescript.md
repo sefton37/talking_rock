@@ -1,7 +1,7 @@
-# UI Migration: PySide6 → TypeScript Desktop App
+# UI: TypeScript Desktop App (Tauri)
 
 ## Goal
-Shift the **desktop UI** from PySide6 (Python) to a **TypeScript desktop app** while keeping ReOS’s core principles intact:
+Run the **desktop UI** as a **TypeScript/Tauri app**, while keeping ReOS’s core principles intact:
 
 - Local-first, metadata-first by default.
 - Git is the primary signal source.
@@ -9,11 +9,13 @@ Shift the **desktop UI** from PySide6 (Python) to a **TypeScript desktop app** w
 - Every insight remains inspectable (tool trace / reasoning trail).
 - No hidden writes: KB edits and patch application stay explicitly confirmed.
 
-This doc maps the current Python UI surface and proposes a TS architecture and phased migration.
+Note: the PySide6 UI has been retired and removed from this repo. This doc now serves as the TS/Tauri architecture reference and historical record.
 
 ---
 
-## Current UI Surface (PySide6)
+## Retired UI Surface (PySide6) — Historical
+
+The PySide6 UI previously lived under `src/reos/gui/`, and has now been removed.
 
 ### Entry point
 - `src/reos/gui/__init__.py` + `src/reos/gui/__main__.py`

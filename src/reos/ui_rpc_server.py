@@ -19,7 +19,6 @@ import difflib
 import hashlib
 import json
 import sys
-from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -58,8 +57,12 @@ def _readline() -> str | None:
 
 
 def _write(obj: Any) -> None:
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # Client closed the pipe (e.g., UI exited). Treat as a clean shutdown.
+        raise SystemExit(0) from None
 
 
 def _tools_list() -> dict[str, Any]:
@@ -86,17 +89,8 @@ def _handle_tools_call(db: Database, *, name: str, arguments: dict[str, Any] | N
 
 def _handle_chat_respond(db: Database, *, text: str) -> dict[str, Any]:
     agent = ChatAgent(db=db)
-    answer, trace = agent.respond(text)
-
-    if is_dataclass(trace):
-        trace_obj: Any = asdict(trace)
-    else:
-        trace_obj = {
-            "tool_calls": getattr(trace, "tool_calls", None),
-            "tool_results": getattr(trace, "tool_results", None),
-        }
-
-    return {"answer": answer, "trace": trace_obj}
+    answer = agent.respond(text)
+    return {"answer": answer}
 
 
 def _handle_state_get(db: Database, *, key: str) -> dict[str, Any]:
@@ -106,12 +100,6 @@ def _handle_state_get(db: Database, *, key: str) -> dict[str, Any]:
 def _handle_state_set(db: Database, *, key: str, value: str | None) -> dict[str, Any]:
     db.set_state(key=key, value=value)
     return {"ok": True}
-
-
-def _handle_events_recent(db: Database, *, limit: int | None) -> dict[str, Any]:
-    if limit is not None and (limit <= 0 or limit > 5000):
-        raise RpcError(code=-32602, message="limit must be between 1 and 5000")
-    return {"events": db.iter_events_recent(limit=limit)}
 
 
 def _handle_personas_list(db: Database) -> dict[str, Any]:
@@ -379,16 +367,6 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
             if value is not None and not isinstance(value, str):
                 raise RpcError(code=-32602, message="value must be a string or null")
             return _jsonrpc_result(req_id=req_id, result=_handle_state_set(db, key=key, value=value))
-
-        if method == "events/recent":
-            if params is None:
-                params = {}
-            if not isinstance(params, dict):
-                raise RpcError(code=-32602, message="params must be an object")
-            limit = params.get("limit")
-            if limit is not None and not isinstance(limit, int):
-                raise RpcError(code=-32602, message="limit must be an integer")
-            return _jsonrpc_result(req_id=req_id, result=_handle_events_recent(db, limit=limit))
 
         if method == "personas/list":
             return _jsonrpc_result(req_id=req_id, result=_handle_personas_list(db))
