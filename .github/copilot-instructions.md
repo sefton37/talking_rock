@@ -48,7 +48,7 @@ ReOS is **not** a task manager and **not** a surveillance tool. It is a memory +
 - **Checks & Balances**: Proactive nudges ("You've been deep for 2 hrs—water break?"), not punishments.
 - **Local-First**: All data SQLite; no sync to cloud without explicit consent.
 - **Transparent Reasoning**: Every ReOS insight shows its full reasoning trail; user can inspect.
-- **Chat-First, Charter/Roadmap Grounded**: ReOS is a chat-first app. New functionality should be driven through the agent + tools first (GUI/MCP are surfaces over the same capabilities). The active project's `project_charter` + `docs/tech-roadmap.md` are the grounding context for reflections and alignment—prefer adding/using tools and agent prompts over adding UI-only pathways.
+- **Chat-First, Charter/Roadmap Grounded**: ReOS is a chat-first app. New functionality should be driven through the agent + tools first (GUI/MCP are surfaces over the same capabilities). Ground reflections and alignment in `.github/ReOS_charter.md` + `docs/tech-roadmap.md` (repo-first; no project/KB model).
 
 ### When Working on ReOS Code
 

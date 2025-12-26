@@ -1,10 +1,10 @@
 """Shared tool implementations for ReOS MCP + internal agent.
 
-These tools are *repo-scoped* to the active project stored in SQLite.
-They are designed to be:
-- local-only
-- metadata-first by default
-- sandboxed to the active project's linked repo
+These tools are repo-scoped.
+
+Repo selection is repo-first:
+- If `REOS_REPO_PATH` is set, tools run against that repo.
+- Otherwise, tools fall back to the workspace root if it is a git repo.
 
 The MCP server wraps these results into MCP's `content` envelope.
 """
@@ -17,10 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .alignment import get_git_summary
+from .alignment import get_git_summary, is_git_repo
 from .db import Database
 from .repo_discovery import discover_git_repos
 from .repo_sandbox import RepoSandboxError, safe_repo_path
+from .settings import settings
 
 _JSON = dict[str, Any]
 
@@ -48,42 +49,16 @@ def list_tools() -> list[Tool]:
             input_schema={"type": "object", "properties": {}},
         ),
         Tool(
-            name="reos_project_charter_list",
-            description="List known project charters (project_id + project_name + last_reaffirmed_at).",
-            input_schema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="reos_project_charter_get",
-            description=(
-                "Get a project charter. If project_id omitted, returns the active project's charter."
-            ),
-            input_schema={"type": "object", "properties": {"project_id": {"type": "string"}}},
-        ),
-        Tool(
-            name="reos_project_active_get",
-            description="Get the active project id (and basic info).",
-            input_schema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="reos_project_active_set",
-            description="Set the active project id.",
-            input_schema={
-                "type": "object",
-                "properties": {"project_id": {"type": "string"}},
-                "required": ["project_id"],
-            },
-        ),
-        Tool(
             name="reos_git_summary",
             description=(
-                "Return git summary for the active project repo. Metadata-only by default; "
+                "Return git summary for the current repo. Metadata-only by default; "
                 "include_diff must be explicitly set true."
             ),
             input_schema={"type": "object", "properties": {"include_diff": {"type": "boolean"}}},
         ),
         Tool(
             name="reos_repo_grep",
-            description="Search text within the active project repo (bounded).",
+            description="Search text within the current repo (bounded).",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -96,7 +71,7 @@ def list_tools() -> list[Tool]:
         ),
         Tool(
             name="reos_repo_read_file",
-            description="Read a file within the active project repo (bounded) by line range.",
+            description="Read a file within the current repo (bounded) by line range.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -109,7 +84,7 @@ def list_tools() -> list[Tool]:
         ),
         Tool(
             name="reos_repo_list_files",
-            description="List files within the active project repo using a glob.",
+            description="List files within the current repo using a glob.",
             input_schema={
                 "type": "object",
                 "properties": {"glob": {"type": "string"}},
@@ -119,15 +94,24 @@ def list_tools() -> list[Tool]:
     ]
 
 
-def _repo_root_from_active_project(db: Database) -> Path:
-    repo_path = db.get_active_project_repo_path()
-    if not repo_path:
-        raise ToolError(
-            code="no_active_project_repo",
-            message="No active project repo is configured.",
-            data={"hint": "Set an active project or link a repo in Projects."},
-        )
-    return Path(repo_path).resolve()
+def _repo_root(db: Database) -> Path:
+    state_repo_path = db.get_state(key="repo_path")
+    if isinstance(state_repo_path, str) and state_repo_path.strip():
+        candidate = Path(state_repo_path).resolve()
+        if is_git_repo(candidate):
+            return candidate
+
+    if settings.repo_path is not None and is_git_repo(settings.repo_path):
+        return settings.repo_path.resolve()
+
+    if is_git_repo(settings.root_dir):
+        return settings.root_dir.resolve()
+
+    raise ToolError(
+        code="no_repo_detected",
+        message="No git repo detected.",
+        data={"hint": "Set REOS_REPO_PATH or run ReOS inside a git repo."},
+    )
 
 
 def call_tool(db: Database, *, name: str, arguments: dict[str, Any] | None) -> Any:
@@ -141,52 +125,9 @@ def call_tool(db: Database, *, name: str, arguments: dict[str, Any] | None) -> A
             db.upsert_repo(repo_id=str(uuid.uuid4()), path=str(repo_path))
         return {"discovered": len(repos)}
 
-    if name == "reos_project_charter_list":
-        rows = db.iter_project_charters()
-        return [
-            {
-                "project_id": r.get("project_id"),
-                "project_name": r.get("project_name"),
-                "last_reaffirmed_at": r.get("last_reaffirmed_at"),
-                "repo_id": r.get("repo_id"),
-            }
-            for r in rows
-        ]
-
-    if name == "reos_project_charter_get":
-        project_id = args.get("project_id")
-        if project_id is None:
-            row = db.get_active_project_charter()
-        else:
-            if not isinstance(project_id, str) or not project_id:
-                raise ToolError(code="invalid_args", message="project_id must be a non-empty string")
-            row = db.get_project_charter(project_id=project_id)
-        return row
-
-    if name == "reos_project_active_get":
-        project_id = db.get_active_project_id()
-        if not project_id:
-            return {"active_project_id": None}
-        row = db.get_project_charter(project_id=project_id)
-        return {
-            "active_project_id": project_id,
-            "project_name": (row or {}).get("project_name"),
-            "repo_id": (row or {}).get("repo_id"),
-        }
-
-    if name == "reos_project_active_set":
-        project_id = args.get("project_id")
-        if not isinstance(project_id, str) or not project_id:
-            raise ToolError(code="invalid_args", message="project_id is required")
-        row = db.get_project_charter(project_id=project_id)
-        if row is None:
-            raise ToolError(code="unknown_project_id", message="Unknown project_id", data={"project_id": project_id})
-        db.set_active_project_id(project_id=project_id)
-        return {"active_project_id": project_id, "project_name": row.get("project_name")}
-
     if name == "reos_git_summary":
         include_diff = bool(args.get("include_diff", False))
-        repo_root = _repo_root_from_active_project(db)
+        repo_root = _repo_root(db)
         summary = get_git_summary(repo_root, include_diff=include_diff)
         return {
             "repo": str(summary.repo_path),
@@ -201,7 +142,7 @@ def call_tool(db: Database, *, name: str, arguments: dict[str, Any] | None) -> A
         glob = args.get("glob")
         if not isinstance(glob, str) or not glob:
             raise ToolError(code="invalid_args", message="glob is required")
-        repo_root = _repo_root_from_active_project(db)
+        repo_root = _repo_root(db)
         return sorted(
             [
                 str(p.relative_to(repo_root))
@@ -211,7 +152,7 @@ def call_tool(db: Database, *, name: str, arguments: dict[str, Any] | None) -> A
         )
 
     if name == "reos_repo_read_file":
-        repo_root = _repo_root_from_active_project(db)
+        repo_root = _repo_root(db)
         path = args.get("path")
         start = args.get("start_line")
         end = args.get("end_line")
@@ -242,7 +183,7 @@ def call_tool(db: Database, *, name: str, arguments: dict[str, Any] | None) -> A
         return "\n".join(lines[start_i - 1 : end_i])
 
     if name == "reos_repo_grep":
-        repo_root = _repo_root_from_active_project(db)
+        repo_root = _repo_root(db)
         query = args.get("query")
         include_glob = args.get("include_glob", "**/*.py")
         max_results = int(args.get("max_results", 50))

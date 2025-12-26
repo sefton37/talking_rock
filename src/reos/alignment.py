@@ -262,11 +262,12 @@ def analyze_alignment(
     - surfaces possible drift: changes far from current milestones
     - offers questions rather than prescriptions
     """
-    inferred_repo: Path | None = repo_path
+    inferred_repo = repo_path
+
     if inferred_repo is None:
-        active_repo = db.get_active_project_repo_path()
-        if isinstance(active_repo, str) and active_repo.strip():
-            candidate = Path(active_repo).resolve()
+        state_repo = db.get_state(key="repo_path")
+        if isinstance(state_repo, str) and state_repo.strip():
+            candidate = Path(state_repo).resolve()
             if is_git_repo(candidate):
                 inferred_repo = candidate
 
@@ -280,21 +281,6 @@ def analyze_alignment(
 
     roadmap: Path | None = roadmap_path
     charter: Path | None = charter_path
-
-    # Prefer the active project's KB docs when available.
-    if roadmap is None or charter is None:
-        project_id = db.get_active_project_id()
-        if isinstance(project_id, str) and project_id:
-            try:
-                from .projects_fs import get_project_paths
-
-                paths = get_project_paths(project_id)
-                if charter is None and paths.charter_md.exists():
-                    charter = paths.charter_md
-                if roadmap is None and paths.roadmap_md.exists():
-                    roadmap = paths.roadmap_md
-            except Exception:
-                pass
 
     roadmap = roadmap or (inferred_repo / "docs" / "tech-roadmap.md")
     charter = charter or (inferred_repo / "ReOS_charter.md")

@@ -11,11 +11,11 @@ from reos.storage import append_event
 
 
 def test_alignment_trigger_is_no_longer_emitted(
-    active_project_repo: Path,
+    configured_repo: Path,
     isolated_db_singleton: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo = active_project_repo
+    repo = configured_repo
 
     # Create enough unmapped tracked changes that would have previously produced
     # an alignment_trigger.

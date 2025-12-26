@@ -115,7 +115,6 @@ def test_agent_respects_tool_call_limit(
 
     tool_plan = {
         "tool_calls": [
-            {"name": "reos_project_charter_get", "arguments": {}},
             {"name": "reos_git_summary", "arguments": {}},
             {"name": "reos_repo_list_files", "arguments": {"glob": "**/*.py"}},
         ]
@@ -146,5 +145,5 @@ def test_agent_falls_back_on_invalid_json_tool_plan(
     agent = ChatAgent(db=get_db(), ollama=FakeOllama(tool_plan_json="not json"))
     _answer = agent.respond("Hello")
 
-    # Fallback should attempt charter + git summary.
-    assert calls[:2] == ["reos_project_charter_get", "reos_git_summary"]
+    # Fallback should attempt a minimal metadata-first call.
+    assert calls[:1] == ["reos_git_summary"]

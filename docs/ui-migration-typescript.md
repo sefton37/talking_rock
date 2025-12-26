@@ -7,7 +7,7 @@ Run the **desktop UI** as a **TypeScript/Tauri app**, while keeping ReOS’s cor
 - Git is the primary signal source.
 - SQLite remains the single source of truth.
 - Every insight remains inspectable (tool trace / reasoning trail).
-- No hidden writes: KB edits and patch application stay explicitly confirmed.
+- No hidden writes.
 
 Note: the PySide6 UI has been retired and removed from this repo. This doc now serves as the TS/Tauri architecture reference and historical record.
 
@@ -33,11 +33,10 @@ The PySide6 UI previously lived under `src/reos/gui/`, and has now been removed.
   - Shows:
     - Chat conversation
     - Inspection pane with `AgentTrace` JSON
-    - A guarded patch apply flow (only applies unified diff to `projects/<id>/kb/` paths)
+    - (Retired) had a guarded patch-apply flow scoped to KB files.
 
 - `src/reos/gui/projects_window.py` + `src/reos/gui/projects_widget.py`:
-  - Projects are **filesystem-backed** under `projects/<project-id>/kb/`.
-  - “Nothing is written without explicit, user-confirmed diff preview.”
+  - (Retired) legacy Projects/KB UI. This model has been removed.
 
 - `src/reos/gui/settings_window.py` + `src/reos/gui/settings_widget.py`:
   - Ollama settings (URL + model)
@@ -53,7 +52,7 @@ The PySide6 UI previously lived under `src/reos/gui/`, and has now been removed.
 
 ### SQLite core
 - `src/reos/db.py`:
-  - Tables include: `events`, `repos`, `project_charter`, `agent_personas`, `app_state`.
+  - Tables include: `events`, `repos`, `agent_personas`, `app_state`.
   - The GUI today reads/writes via Python DB methods directly.
 
 ### Git observer + triggers
@@ -66,7 +65,7 @@ The PySide6 UI previously lived under `src/reos/gui/`, and has now been removed.
 
 ### Tool boundary (already close to UI-ready)
 - `src/reos/mcp_tools.py` + `src/reos/mcp_server.py`:
-  - A repo-scoped tool catalog backed by SQLite “active project”.
+  - A repo-scoped tool catalog backed by explicit repo selection.
   - Exposes JSON-RPC over stdio (MCP-like): `tools/list`, `tools/call`.
   - Useful building block for a TS UI because it is:
     - local-only

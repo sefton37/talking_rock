@@ -3,15 +3,14 @@
 This is a lightweight MCP-compatible JSON-RPC server over stdio.
 
 Goal (MVP): allow a local MCP client (no VS Code extension) to interrogate a
-project via:
-- project_charter (ground truth)
+repo via:
 - git metadata (and optional diff by explicit opt-in)
 - bounded repo file operations (read/grep/list)
 
 Security / attention principles:
 - Local-only.
 - Metadata-first by default.
-- File operations are sandboxed to the *active project's linked repo*.
+- File operations are sandboxed to the configured repo root.
 """
 
 from __future__ import annotations
@@ -59,18 +58,6 @@ def _readline() -> str | None:
 def _write(obj: Any) -> None:
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()
-
-
-def _repo_root_from_active_project(db: Database) -> Path:
-    repo_path = db.get_active_project_repo_path()
-    if not repo_path:
-        raise McpError(
-            code=-32000,
-            message="No active project repo is configured.",
-            data={"hint": "Call reos_project_active_set or set active_project_id in app_state."},
-        )
-    return Path(repo_path).resolve()
-
 
 def _safe_repo_path(repo_root: Path, rel_path: str) -> Path:
     try:

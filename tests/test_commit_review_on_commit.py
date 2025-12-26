@@ -14,7 +14,7 @@ from reos.settings import settings
 
 class _FakeReviewer:
     def review(self, inp: CommitReviewInput) -> str:
-        return f"Reviewed {inp.commit_sha} in {inp.project_name}"
+        return f"Reviewed {inp.commit_sha}"
 
 
 def _write(p: Path, text: str) -> None:
@@ -25,13 +25,11 @@ def _write(p: Path, text: str) -> None:
 @pytest.mark.usefixtures("isolated_db_singleton")
 def test_poll_commits_and_review_creates_event(
     temp_git_repo: Path,
-    active_project_repo: Path,
+    configured_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db = get_db()
-    project_id = db.get_active_project_id()
-    assert isinstance(project_id, str) and project_id
-    repo_path = active_project_repo
+    repo_path = configured_repo
 
     # Enable commit review + diff capture (explicit opt-in).
     monkeypatch.setattr(
@@ -65,7 +63,6 @@ def test_poll_commits_and_review_creates_event(
     payload = json.loads(payload_raw)
 
     assert payload["kind"] == "commit_review"
-    assert payload["project_id"] == project_id
     assert payload["repo"] == str(repo_path)
     assert isinstance(payload["commit_sha"], str) and payload["commit_sha"]
     assert "Reviewed" in payload["review"]

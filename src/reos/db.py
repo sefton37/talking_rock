@@ -5,8 +5,6 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .projects_fs import extract_repo_path, get_project_paths
-
 from .settings import settings
 
 
@@ -129,71 +127,7 @@ class Database:
             """
         )
 
-        # Projects are user-declared meaning containers (1 project -> 1 repo).
-        # NOTE: `projects` was an earlier minimal version. Keep it for backwards
-        # compatibility with existing local DB files; new code should use
-        # `project_charter`.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS projects (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                charter_text TEXT NOT NULL,
-                repo_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                ingested_at TEXT NOT NULL,
-                FOREIGN KEY (repo_id) REFERENCES repos(id)
-            )
-            """
-        )
-
-        # Project charter: authoritative, human-authored, slow-changing.
-        # One row per project.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project_charter (
-                project_id TEXT PRIMARY KEY,
-                repo_id TEXT NOT NULL,
-                project_name TEXT NOT NULL,
-                project_owner TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                last_reaffirmed_at TEXT NOT NULL,
-
-                core_intent TEXT NOT NULL,
-                problem_statement TEXT NOT NULL,
-                non_goals TEXT NOT NULL,
-
-                definition_of_done TEXT NOT NULL,
-                success_signals TEXT NOT NULL,
-                failure_conditions TEXT NOT NULL,
-                sunset_criteria TEXT NOT NULL,
-
-                time_horizon TEXT NOT NULL,
-                energy_profile TEXT NOT NULL,
-                allowed_scope TEXT NOT NULL,
-                forbidden_scope TEXT NOT NULL,
-
-                primary_values TEXT NOT NULL,
-                acceptable_tradeoffs TEXT NOT NULL,
-                unacceptable_tradeoffs TEXT NOT NULL,
-
-                attention_budget TEXT NOT NULL,
-                distraction_tolerance TEXT NOT NULL,
-                intervention_style TEXT NOT NULL,
-
-                origin_story TEXT,
-                current_state_summary TEXT,
-
-                updated_at TEXT NOT NULL,
-                ingested_at TEXT NOT NULL,
-                FOREIGN KEY (repo_id) REFERENCES repos(id)
-            )
-            """
-        )
-
         # App state: small key/value store for local UI + tool coordination.
-        # Example: active_project_id.
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS app_state (
@@ -315,59 +249,6 @@ class Database:
             return row["value"]
         return str(row[0]) if row[0] is not None else None
 
-    def set_active_project_id(self, *, project_id: str | None) -> None:
-        """Set the active project id (used to scope tools and reflections)."""
-        self.set_state(key="active_project_id", value=project_id)
-
-    def get_active_project_id(self) -> str | None:
-        """Get the active project id."""
-        return self.get_state(key="active_project_id")
-
-    def get_active_project_charter(self) -> dict[str, object] | None:
-        """Get the active project's charter, if any."""
-        project_id = self.get_active_project_id()
-        if not project_id:
-            return None
-        return self.get_project_charter(project_id=project_id)
-
-    def get_active_project_repo_path(self) -> str | None:
-        """Resolve the active project's linked repo path.
-
-        New (git-first) behavior:
-        - If active_project_id is set and a corresponding
-          projects/<project-id>/kb/settings.md exists, read `repoPath:` from it.
-
-        Backwards-compatible fallback:
-        - Use the legacy SQLite project_charter -> repos mapping.
-        """
-
-        active_project_id = self.get_active_project_id()
-        if isinstance(active_project_id, str) and active_project_id:
-            try:
-                paths = get_project_paths(active_project_id)
-                if paths.settings_md.exists():
-                    repo_path = extract_repo_path(paths.settings_md.read_text(encoding="utf-8", errors="replace"))
-                    if isinstance(repo_path, str) and repo_path.strip():
-                        return repo_path.strip()
-            except Exception:
-                # Fall through to legacy resolution.
-                pass
-
-        project = self.get_active_project_charter()
-        if project is None:
-            return None
-
-        repo_id = project.get("repo_id")
-        if not isinstance(repo_id, str) or not repo_id:
-            return None
-
-        row = self._execute("SELECT path FROM repos WHERE id = ?", (repo_id,)).fetchone()
-        if row is None:
-            return None
-        if isinstance(row, sqlite3.Row):
-            return str(row["path"])
-        return str(row[0])
-
     def upsert_repo(self, *, repo_id: str, path: str, remote_summary: str | None = None) -> None:
         """Insert or update a discovered repo by path."""
         now = datetime.now(UTC).isoformat()
@@ -414,78 +295,6 @@ class Database:
             val = row["path"]
             return str(val) if val is not None else None
         return str(row[0]) if row[0] is not None else None
-
-    def insert_project_charter(self, *, record: dict[str, str]) -> None:
-        """Insert a project charter.
-
-        The caller is responsible for providing all required fields.
-        """
-        now = datetime.now(UTC).isoformat()
-        payload = {
-            **record,
-            "updated_at": record.get("updated_at") or now,
-            "ingested_at": record.get("ingested_at") or now,
-        }
-
-        columns = sorted(payload.keys())
-        values = [payload[c] for c in columns]
-        placeholders = ", ".join(["?"] * len(columns))
-        col_sql = ", ".join(columns)
-
-        self._execute(
-            f"INSERT INTO project_charter ({col_sql}) VALUES ({placeholders})",
-            tuple(values),
-        )
-        self.connect().commit()
-
-    def update_project_charter(self, *, project_id: str, updates: dict[str, str]) -> None:
-        """Update a project charter.
-
-        Note: this does not update `last_reaffirmed_at`; reaffirmation is explicit.
-        """
-        if not updates:
-            return
-
-        now = datetime.now(UTC).isoformat()
-        updates = {**updates, "updated_at": now, "ingested_at": now}
-
-        assignments = ", ".join([f"{k} = ?" for k in sorted(updates.keys())])
-        values = [updates[k] for k in sorted(updates.keys())]
-        values.append(project_id)
-
-        self._execute(
-            f"UPDATE project_charter SET {assignments} WHERE project_id = ?",
-            tuple(values),
-        )
-        self.connect().commit()
-
-    def reaffirm_project_charter(self, *, project_id: str) -> None:
-        """Explicitly reaffirm a charter (human-confirmed action)."""
-        now = datetime.now(UTC).isoformat()
-        self._execute(
-            """
-            UPDATE project_charter
-            SET last_reaffirmed_at = ?, updated_at = ?, ingested_at = ?
-            WHERE project_id = ?
-            """,
-            (now, now, now, project_id),
-        )
-        self.connect().commit()
-
-    def get_project_charter(self, *, project_id: str) -> dict[str, object] | None:
-        """Return a single project charter."""
-        row = self._execute(
-            "SELECT * FROM project_charter WHERE project_id = ?",
-            (project_id,),
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def iter_project_charters(self) -> list[dict[str, object]]:
-        """Return project charters (newest updated first)."""
-        rows = self._execute(
-            "SELECT * FROM project_charter ORDER BY updated_at DESC"
-        ).fetchall()
-        return [dict(row) for row in rows]
 
     def insert_event(
         self,

@@ -32,13 +32,11 @@ def test_db_migrate(temp_db: Database) -> None:
     assert "classifications" in names
     assert "audit_log" in names
     assert "repos" in names
-    assert "projects" in names
-    assert "project_charter" in names
     assert "app_state" in names
     assert "agent_personas" in names
 
 
-def test_db_repos_and_projects(temp_db: Database) -> None:
+def test_db_repos(temp_db: Database) -> None:
     temp_db.upsert_repo(repo_id="repo-1", path="/tmp/example")
     repos = temp_db.iter_repos()
     assert len(repos) == 1
@@ -48,62 +46,6 @@ def test_db_repos_and_projects(temp_db: Database) -> None:
     temp_db.upsert_repo(repo_id="repo-2", path="/tmp/example")
     repos2 = temp_db.iter_repos()
     assert len(repos2) == 1
-
-    repo_id = str(repos2[0]["id"])
-    base_now = "2025-12-19T00:00:00+00:00"
-
-    temp_db.insert_project_charter(
-        record={
-            "project_id": "proj-1",
-            "repo_id": repo_id,
-            "project_name": "Example",
-            "project_owner": "kellogg",
-            "created_at": base_now,
-            "last_reaffirmed_at": base_now,
-            "core_intent": "Why it exists.",
-            "problem_statement": "What problem it addresses.",
-            "non_goals": "What it is not trying to do.",
-            "definition_of_done": "When it is done.",
-            "success_signals": "Signals it is going well.",
-            "failure_conditions": "When to stop.",
-            "sunset_criteria": "How to pause/abandon.",
-            "time_horizon": "6 months",
-            "energy_profile": "deep focus",
-            "allowed_scope": "Allowed work boundaries.",
-            "forbidden_scope": "Forbidden boundaries.",
-            "primary_values": "privacy over convenience",
-            "acceptable_tradeoffs": "polish",
-            "unacceptable_tradeoffs": "surveillance",
-            "attention_budget": "default focus",
-            "distraction_tolerance": "low",
-            "intervention_style": "gentle nudge",
-            "origin_story": "Why now.",
-            "current_state_summary": "Where things stand.",
-            "updated_at": base_now,
-            "ingested_at": base_now,
-        }
-    )
-
-    charters = temp_db.iter_project_charters()
-    assert len(charters) == 1
-    assert charters[0]["project_name"] == "Example"
-    assert charters[0]["repo_id"] == repo_id
-
-    temp_db.update_project_charter(
-        project_id="proj-1",
-        updates={"project_name": "Example 2", "core_intent": "Updated intent."},
-    )
-    charter2 = temp_db.get_project_charter(project_id="proj-1")
-    assert charter2 is not None
-    assert charter2["project_name"] == "Example 2"
-    assert charter2["core_intent"] == "Updated intent."
-
-    # Reaffirmation is explicit (separate call).
-    last_reaffirmed_before = str(charter2["last_reaffirmed_at"])
-    temp_db.reaffirm_project_charter(project_id="proj-1")
-    charter3 = temp_db.get_project_charter(project_id="proj-1")
-    assert charter3 is not None
-    assert str(charter3["last_reaffirmed_at"]) != last_reaffirmed_before
 
 
 def test_db_agent_personas(temp_db: Database) -> None:

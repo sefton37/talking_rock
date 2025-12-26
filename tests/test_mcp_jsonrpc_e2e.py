@@ -21,7 +21,7 @@ def _extract_text_content(result: dict) -> str:
     return text
 
 
-def test_mcp_tools_call_returns_text_envelope(active_project_repo: Path) -> None:
+def test_mcp_tools_call_returns_text_envelope(configured_repo: Path) -> None:
     import reos.mcp_server as mcp
 
     db = get_db()
@@ -44,7 +44,7 @@ def test_mcp_tools_call_returns_text_envelope(active_project_repo: Path) -> None
     assert "src/reos/example.py" in payload
 
 
-def test_mcp_tools_call_invalid_args_maps_to_32602(active_project_repo: Path) -> None:
+def test_mcp_tools_call_invalid_args_maps_to_32602(configured_repo: Path) -> None:
     import reos.mcp_server as mcp
 
     db = get_db()
@@ -62,7 +62,7 @@ def test_mcp_tools_call_invalid_args_maps_to_32602(active_project_repo: Path) ->
     assert resp["error"]["code"] == -32602
 
 
-def test_mcp_tools_call_path_escape_maps_to_32000(active_project_repo: Path) -> None:
+def test_mcp_tools_call_path_escape_maps_to_32000(configured_repo: Path) -> None:
     import reos.mcp_server as mcp
 
     db = get_db()
@@ -86,7 +86,7 @@ def test_mcp_tools_call_path_escape_maps_to_32000(active_project_repo: Path) -> 
     assert data.get("path") == "../secrets.txt"
 
 
-def test_mcp_notifications_are_ignored(active_project_repo: Path) -> None:
+def test_mcp_notifications_are_ignored(configured_repo: Path) -> None:
     import reos.mcp_server as mcp
 
     db = get_db()

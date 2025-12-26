@@ -15,7 +15,6 @@ catalog so the UI can reuse those capabilities.
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
 import sys
@@ -25,7 +24,21 @@ from typing import Any
 from .agent import ChatAgent
 from .db import Database, get_db
 from .mcp_tools import ToolError, call_tool, list_tools
-from .projects_fs import get_project_paths, is_valid_project_id, kb_relative_tree, read_text, workspace_root
+from .play_fs import create_act as play_create_act
+from .play_fs import create_beat as play_create_beat
+from .play_fs import create_scene as play_create_scene
+from .play_fs import kb_list_files as play_kb_list_files
+from .play_fs import kb_read as play_kb_read
+from .play_fs import kb_write_apply as play_kb_write_apply
+from .play_fs import kb_write_preview as play_kb_write_preview
+from .play_fs import list_acts as play_list_acts
+from .play_fs import list_beats as play_list_beats
+from .play_fs import list_scenes as play_list_scenes
+from .play_fs import read_me_markdown as play_read_me_markdown
+from .play_fs import set_active_act_id as play_set_active_act_id
+from .play_fs import update_act as play_update_act
+from .play_fs import update_beat as play_update_beat
+from .play_fs import update_scene as play_update_scene
 
 _JSON = dict[str, Any]
 
@@ -144,187 +157,328 @@ def _handle_persona_set_active(db: Database, *, persona_id: str | None) -> dict[
     return {"ok": True}
 
 
-def _handle_projects_list(db: Database) -> dict[str, Any]:
-    # Projects have two sources of truth today:
-    # - Filesystem-backed project folders under `projects/<id>/...`
-    # - SQLite-backed project_charter rows used by the agent/tooling
-    #
-    # If we only list filesystem projects, the UI can show an empty Projects
-    # section while the DB still has an active_project_id, which feels like a
-    # disconnect. So we return the union.
-    from .projects_fs import list_project_ids
-
-    project_ids: set[str] = set(list_project_ids())
-
-    for row in db.iter_project_charters():
-        pid = row.get("project_id")
-        if isinstance(pid, str) and pid:
-            project_ids.add(pid)
-
-    active_project_id = db.get_active_project_id()
-    if isinstance(active_project_id, str) and active_project_id:
-        # Strict behavior: an active project must actually exist.
-        # If it doesn't exist in either the filesystem-backed project list or
-        # the SQLite-backed charter list, clear it.
-        if active_project_id not in project_ids:
-            db.set_active_project_id(project_id=None)
-            active_project_id = None
-
-    return {
-        "projects": sorted(project_ids),
-        "active_project_id": active_project_id,
-    }
-
-
-def _handle_project_set_active(db: Database, *, project_id: str | None) -> dict[str, Any]:
-    if project_id is None:
-        db.set_active_project_id(project_id=None)
-        return {"ok": True}
-
-    if not isinstance(project_id, str) or not project_id:
-        raise RpcError(code=-32602, message="project_id must be a non-empty string or null")
-    if not is_valid_project_id(project_id):
-        raise RpcError(code=-32602, message="invalid project_id")
-    db.set_active_project_id(project_id=project_id)
-    return {"ok": True}
-
-
-def _handle_kb_tree(db: Database, *, project_id: str | None) -> dict[str, Any]:
-    if project_id is None:
-        project_id = db.get_active_project_id()
-    if not project_id:
-        return {"files": [], "project_id": None}
-    if not is_valid_project_id(project_id):
-        raise RpcError(code=-32602, message="invalid project_id")
-    return {"files": kb_relative_tree(project_id), "project_id": project_id}
-
-
-def _resolve_kb_path(*, project_id: str, rel_path: str) -> Path:
-    # Only allow reads under: projects/<project-id>/kb/
-    if not is_valid_project_id(project_id):
-        raise RpcError(code=-32602, message="invalid project_id")
-    if not isinstance(rel_path, str) or not rel_path:
-        raise RpcError(code=-32602, message="path is required")
-
-    root = workspace_root()
-    paths = get_project_paths(project_id)
-    kb_root = paths.kb_dir.resolve()
-
-    # Allow either:
-    # - "projects/<id>/kb/..." (workspace-relative)
-    # - "kb/..." or "pages/..." (kb-relative)
-    candidate: Path
-    if rel_path.startswith("projects/"):
-        candidate = (root / rel_path).resolve()
-    else:
-        candidate = (kb_root / rel_path).resolve()
-
-    if kb_root not in candidate.parents and candidate != kb_root:
-        raise RpcError(code=-32602, message="path escapes kb root")
-    return candidate
-
-
-def _handle_kb_read(db: Database, *, project_id: str | None, path: str) -> dict[str, Any]:
-    if project_id is None:
-        project_id = db.get_active_project_id()
-    if not project_id:
-        raise RpcError(code=-32602, message="project_id is required (or set an active project)")
-
-    abs_path = _resolve_kb_path(project_id=project_id, rel_path=path)
-    if not abs_path.exists() or not abs_path.is_file():
-        raise RpcError(code=-32602, message="file not found")
-    return {
-        "path": str(abs_path.relative_to(workspace_root())),
-        "text": read_text(abs_path),
-    }
-
-
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _handle_kb_write_preview(
-    db: Database,
-    *,
-    project_id: str | None,
-    path: str,
-    text: str,
-) -> dict[str, Any]:
-    if project_id is None:
-        project_id = db.get_active_project_id()
-    if not project_id:
-        raise RpcError(code=-32602, message="project_id is required (or set an active project)")
+def _handle_play_me_read(_db: Database) -> dict[str, Any]:
+    return {"markdown": play_read_me_markdown()}
 
-    abs_path = _resolve_kb_path(project_id=project_id, rel_path=path)
-    if abs_path.exists() and abs_path.is_dir():
-        raise RpcError(code=-32602, message="path points to a directory")
 
-    exists = abs_path.exists() and abs_path.is_file()
-    current = read_text(abs_path) if exists else ""
-
-    current_sha = _sha256_text(current)
-    new_sha = _sha256_text(text)
-
-    rel = str(abs_path.relative_to(workspace_root()))
-    diff_lines = difflib.unified_diff(
-        current.splitlines(keepends=True),
-        text.splitlines(keepends=True),
-        fromfile=f"a/{rel}",
-        tofile=f"b/{rel}",
-        lineterm="",
-    )
-    diff = "\n".join(diff_lines)
+def _handle_play_acts_list(_db: Database) -> dict[str, Any]:
+    acts, active_id = play_list_acts()
     return {
-        "project_id": project_id,
-        "path": rel,
-        "exists": exists,
-        "sha256_current": current_sha,
-        "sha256_new": new_sha,
-        "diff": diff,
+        "active_act_id": active_id,
+        "acts": [
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes}
+            for a in acts
+        ],
     }
 
 
-def _handle_kb_write_apply(
-    db: Database,
+def _handle_play_acts_set_active(_db: Database, *, act_id: str) -> dict[str, Any]:
+    try:
+        acts, active_id = play_set_active_act_id(act_id=act_id)
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {
+        "active_act_id": active_id,
+        "acts": [
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes}
+            for a in acts
+        ],
+    }
+
+
+def _handle_play_scenes_list(_db: Database, *, act_id: str) -> dict[str, Any]:
+    scenes = play_list_scenes(act_id=act_id)
+    return {
+        "scenes": [
+            {
+                "scene_id": s.scene_id,
+                "title": s.title,
+                "intent": s.intent,
+                "status": s.status,
+                "time_horizon": s.time_horizon,
+                "notes": s.notes,
+            }
+            for s in scenes
+        ]
+    }
+
+
+def _handle_play_beats_list(_db: Database, *, act_id: str, scene_id: str) -> dict[str, Any]:
+    beats = play_list_beats(act_id=act_id, scene_id=scene_id)
+    return {
+        "beats": [
+            {
+                "beat_id": b.beat_id,
+                "title": b.title,
+                "status": b.status,
+                "notes": b.notes,
+                "link": b.link,
+            }
+            for b in beats
+        ]
+    }
+
+
+def _handle_play_acts_create(_db: Database, *, title: str, notes: str | None = None) -> dict[str, Any]:
+    try:
+        acts, created_id = play_create_act(title=title, notes=notes or "")
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {
+        "created_act_id": created_id,
+        "acts": [
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes}
+            for a in acts
+        ],
+    }
+
+
+def _handle_play_acts_update(
+    _db: Database,
     *,
-    project_id: str | None,
+    act_id: str,
+    title: str | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    try:
+        acts, active_id = play_update_act(act_id=act_id, title=title, notes=notes)
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {
+        "active_act_id": active_id,
+        "acts": [
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes}
+            for a in acts
+        ],
+    }
+
+
+def _handle_play_scenes_create(
+    _db: Database,
+    *,
+    act_id: str,
+    title: str,
+    intent: str | None = None,
+    status: str | None = None,
+    time_horizon: str | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    try:
+        scenes = play_create_scene(
+            act_id=act_id,
+            title=title,
+            intent=intent or "",
+            status=status or "",
+            time_horizon=time_horizon or "",
+            notes=notes or "",
+        )
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {
+        "scenes": [
+            {
+                "scene_id": s.scene_id,
+                "title": s.title,
+                "intent": s.intent,
+                "status": s.status,
+                "time_horizon": s.time_horizon,
+                "notes": s.notes,
+            }
+            for s in scenes
+        ]
+    }
+
+
+def _handle_play_scenes_update(
+    _db: Database,
+    *,
+    act_id: str,
+    scene_id: str,
+    title: str | None = None,
+    intent: str | None = None,
+    status: str | None = None,
+    time_horizon: str | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    try:
+        scenes = play_update_scene(
+            act_id=act_id,
+            scene_id=scene_id,
+            title=title,
+            intent=intent,
+            status=status,
+            time_horizon=time_horizon,
+            notes=notes,
+        )
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {
+        "scenes": [
+            {
+                "scene_id": s.scene_id,
+                "title": s.title,
+                "intent": s.intent,
+                "status": s.status,
+                "time_horizon": s.time_horizon,
+                "notes": s.notes,
+            }
+            for s in scenes
+        ]
+    }
+
+
+def _handle_play_beats_create(
+    _db: Database,
+    *,
+    act_id: str,
+    scene_id: str,
+    title: str,
+    status: str | None = None,
+    notes: str | None = None,
+    link: str | None = None,
+) -> dict[str, Any]:
+    try:
+        beats = play_create_beat(
+            act_id=act_id,
+            scene_id=scene_id,
+            title=title,
+            status=status or "",
+            notes=notes or "",
+            link=link,
+        )
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {
+        "beats": [
+            {
+                "beat_id": b.beat_id,
+                "title": b.title,
+                "status": b.status,
+                "notes": b.notes,
+                "link": b.link,
+            }
+            for b in beats
+        ]
+    }
+
+
+def _handle_play_beats_update(
+    _db: Database,
+    *,
+    act_id: str,
+    scene_id: str,
+    beat_id: str,
+    title: str | None = None,
+    status: str | None = None,
+    notes: str | None = None,
+    link: str | None = None,
+) -> dict[str, Any]:
+    try:
+        beats = play_update_beat(
+            act_id=act_id,
+            scene_id=scene_id,
+            beat_id=beat_id,
+            title=title,
+            status=status,
+            notes=notes,
+            link=link,
+        )
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {
+        "beats": [
+            {
+                "beat_id": b.beat_id,
+                "title": b.title,
+                "status": b.status,
+                "notes": b.notes,
+                "link": b.link,
+            }
+            for b in beats
+        ]
+    }
+
+
+def _handle_play_kb_list(
+    _db: Database,
+    *,
+    act_id: str,
+    scene_id: str | None = None,
+    beat_id: str | None = None,
+) -> dict[str, Any]:
+    try:
+        files = play_kb_list_files(act_id=act_id, scene_id=scene_id, beat_id=beat_id)
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {"files": files}
+
+
+def _handle_play_kb_read(
+    _db: Database,
+    *,
+    act_id: str,
+    scene_id: str | None = None,
+    beat_id: str | None = None,
+    path: str = "kb.md",
+) -> dict[str, Any]:
+    try:
+        text = play_kb_read(act_id=act_id, scene_id=scene_id, beat_id=beat_id, path=path)
+    except FileNotFoundError as exc:
+        raise RpcError(code=-32602, message=f"file not found: {exc}") from exc
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {"path": path, "text": text}
+
+
+def _handle_play_kb_write_preview(
+    _db: Database,
+    *,
+    act_id: str,
+    scene_id: str | None = None,
+    beat_id: str | None = None,
+    path: str,
+    text: str,
+) -> dict[str, Any]:
+    try:
+        res = play_kb_write_preview(act_id=act_id, scene_id=scene_id, beat_id=beat_id, path=path, text=text)
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+    return {
+        "path": path,
+        "expected_sha256_current": res["sha256_current"],
+        **res,
+    }
+
+
+def _handle_play_kb_write_apply(
+    _db: Database,
+    *,
+    act_id: str,
+    scene_id: str | None = None,
+    beat_id: str | None = None,
     path: str,
     text: str,
     expected_sha256_current: str,
 ) -> dict[str, Any]:
-    if project_id is None:
-        project_id = db.get_active_project_id()
-    if not project_id:
-        raise RpcError(code=-32602, message="project_id is required (or set an active project)")
     if not isinstance(expected_sha256_current, str) or not expected_sha256_current:
         raise RpcError(code=-32602, message="expected_sha256_current is required")
-
-    abs_path = _resolve_kb_path(project_id=project_id, rel_path=path)
-    if abs_path.exists() and abs_path.is_dir():
-        raise RpcError(code=-32602, message="path points to a directory")
-
-    exists = abs_path.exists() and abs_path.is_file()
-    current = read_text(abs_path) if exists else ""
-    current_sha = _sha256_text(current)
-    if current_sha != expected_sha256_current:
-        raise RpcError(
-            code=-32009,
-            message="conflict: file changed since preview",
-            data={
-                "path": str(abs_path.relative_to(workspace_root())),
-                "sha256_current": current_sha,
-            },
+    try:
+        res = play_kb_write_apply(
+            act_id=act_id,
+            scene_id=scene_id,
+            beat_id=beat_id,
+            path=path,
+            text=text,
+            expected_sha256_current=expected_sha256_current,
         )
-
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-    abs_path.write_text(text, encoding="utf-8")
-    after_sha = _sha256_text(text)
-    return {
-        "ok": True,
-        "project_id": project_id,
-        "path": str(abs_path.relative_to(workspace_root())),
-        "sha256_current": after_sha,
-    }
+    except ValueError as exc:
+        # Surface conflicts as a deterministic JSON-RPC error.
+        raise RpcError(code=-32009, message=str(exc)) from exc
+    return {"path": path, **res}
 
 
 def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any] | None:
@@ -417,78 +571,294 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
                 raise RpcError(code=-32602, message="persona_id must be a string or null")
             return _jsonrpc_result(req_id=req_id, result=_handle_persona_set_active(db, persona_id=persona_id))
 
-        if method == "projects/list":
-            return _jsonrpc_result(req_id=req_id, result=_handle_projects_list(db))
+        if method == "play/me/read":
+            return _jsonrpc_result(req_id=req_id, result=_handle_play_me_read(db))
 
-        if method == "projects/set_active":
+        if method == "play/acts/list":
+            return _jsonrpc_result(req_id=req_id, result=_handle_play_acts_list(db))
+
+        if method == "play/acts/create":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            project_id = params.get("project_id")
-            if project_id is not None and not isinstance(project_id, str):
-                raise RpcError(code=-32602, message="project_id must be a string or null")
-            return _jsonrpc_result(req_id=req_id, result=_handle_project_set_active(db, project_id=project_id))
+            title = params.get("title")
+            notes = params.get("notes")
+            if not isinstance(title, str) or not title.strip():
+                raise RpcError(code=-32602, message="title is required")
+            if notes is not None and not isinstance(notes, str):
+                raise RpcError(code=-32602, message="notes must be a string or null")
+            return _jsonrpc_result(req_id=req_id, result=_handle_play_acts_create(db, title=title, notes=notes))
 
-        if method == "kb/tree":
-            if params is None:
-                params = {}
+        if method == "play/acts/update":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            project_id = params.get("project_id")
-            if project_id is not None and not isinstance(project_id, str):
-                raise RpcError(code=-32602, message="project_id must be a string or null")
-            return _jsonrpc_result(req_id=req_id, result=_handle_kb_tree(db, project_id=project_id))
-
-        if method == "kb/read":
-            if not isinstance(params, dict):
-                raise RpcError(code=-32602, message="params must be an object")
-            project_id = params.get("project_id")
-            path = params.get("path")
-            if project_id is not None and not isinstance(project_id, str):
-                raise RpcError(code=-32602, message="project_id must be a string or null")
-            if not isinstance(path, str) or not path:
-                raise RpcError(code=-32602, message="path is required")
+            act_id = params.get("act_id")
+            title = params.get("title")
+            notes = params.get("notes")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            if title is not None and not isinstance(title, str):
+                raise RpcError(code=-32602, message="title must be a string or null")
+            if notes is not None and not isinstance(notes, str):
+                raise RpcError(code=-32602, message="notes must be a string or null")
             return _jsonrpc_result(
                 req_id=req_id,
-                result=_handle_kb_read(db, project_id=project_id, path=path),
+                result=_handle_play_acts_update(db, act_id=act_id, title=title, notes=notes),
             )
 
-        if method == "kb/write_preview":
+        if method == "play/acts/set_active":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            project_id = params.get("project_id")
+            act_id = params.get("act_id")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            return _jsonrpc_result(req_id=req_id, result=_handle_play_acts_set_active(db, act_id=act_id))
+
+        if method == "play/scenes/list":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            return _jsonrpc_result(req_id=req_id, result=_handle_play_scenes_list(db, act_id=act_id))
+
+        if method == "play/scenes/create":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            title = params.get("title")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            if not isinstance(title, str) or not title.strip():
+                raise RpcError(code=-32602, message="title is required")
+            intent = params.get("intent")
+            status = params.get("status")
+            time_horizon = params.get("time_horizon")
+            notes = params.get("notes")
+            for k, v in {
+                "intent": intent,
+                "status": status,
+                "time_horizon": time_horizon,
+                "notes": notes,
+            }.items():
+                if v is not None and not isinstance(v, str):
+                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_play_scenes_create(
+                    db,
+                    act_id=act_id,
+                    title=title,
+                    intent=intent,
+                    status=status,
+                    time_horizon=time_horizon,
+                    notes=notes,
+                ),
+            )
+
+        if method == "play/scenes/update":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            scene_id = params.get("scene_id")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            if not isinstance(scene_id, str) or not scene_id:
+                raise RpcError(code=-32602, message="scene_id is required")
+            title = params.get("title")
+            intent = params.get("intent")
+            status = params.get("status")
+            time_horizon = params.get("time_horizon")
+            notes = params.get("notes")
+            for k, v in {
+                "title": title,
+                "intent": intent,
+                "status": status,
+                "time_horizon": time_horizon,
+                "notes": notes,
+            }.items():
+                if v is not None and not isinstance(v, str):
+                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_play_scenes_update(
+                    db,
+                    act_id=act_id,
+                    scene_id=scene_id,
+                    title=title,
+                    intent=intent,
+                    status=status,
+                    time_horizon=time_horizon,
+                    notes=notes,
+                ),
+            )
+
+        if method == "play/beats/list":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            scene_id = params.get("scene_id")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            if not isinstance(scene_id, str) or not scene_id:
+                raise RpcError(code=-32602, message="scene_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_play_beats_list(db, act_id=act_id, scene_id=scene_id),
+            )
+
+        if method == "play/beats/create":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            scene_id = params.get("scene_id")
+            title = params.get("title")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            if not isinstance(scene_id, str) or not scene_id:
+                raise RpcError(code=-32602, message="scene_id is required")
+            if not isinstance(title, str) or not title.strip():
+                raise RpcError(code=-32602, message="title is required")
+            status = params.get("status")
+            notes = params.get("notes")
+            link = params.get("link")
+            for k, v in {"status": status, "notes": notes, "link": link}.items():
+                if v is not None and not isinstance(v, str):
+                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_play_beats_create(
+                    db,
+                    act_id=act_id,
+                    scene_id=scene_id,
+                    title=title,
+                    status=status,
+                    notes=notes,
+                    link=link,
+                ),
+            )
+
+        if method == "play/beats/update":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            scene_id = params.get("scene_id")
+            beat_id = params.get("beat_id")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            if not isinstance(scene_id, str) or not scene_id:
+                raise RpcError(code=-32602, message="scene_id is required")
+            if not isinstance(beat_id, str) or not beat_id:
+                raise RpcError(code=-32602, message="beat_id is required")
+            title = params.get("title")
+            status = params.get("status")
+            notes = params.get("notes")
+            link = params.get("link")
+            for k, v in {"title": title, "status": status, "notes": notes, "link": link}.items():
+                if v is not None and not isinstance(v, str):
+                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_play_beats_update(
+                    db,
+                    act_id=act_id,
+                    scene_id=scene_id,
+                    beat_id=beat_id,
+                    title=title,
+                    status=status,
+                    notes=notes,
+                    link=link,
+                ),
+            )
+
+        if method == "play/kb/list":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            scene_id = params.get("scene_id")
+            beat_id = params.get("beat_id")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            for k, v in {"scene_id": scene_id, "beat_id": beat_id}.items():
+                if v is not None and not isinstance(v, str):
+                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_play_kb_list(db, act_id=act_id, scene_id=scene_id, beat_id=beat_id),
+            )
+
+        if method == "play/kb/read":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            scene_id = params.get("scene_id")
+            beat_id = params.get("beat_id")
+            path = params.get("path", "kb.md")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            for k, v in {"scene_id": scene_id, "beat_id": beat_id, "path": path}.items():
+                if v is not None and not isinstance(v, str):
+                    raise RpcError(code=-32602, message=f"{k} must be a string")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_play_kb_read(db, act_id=act_id, scene_id=scene_id, beat_id=beat_id, path=path),
+            )
+
+        if method == "play/kb/write_preview":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            scene_id = params.get("scene_id")
+            beat_id = params.get("beat_id")
             path = params.get("path")
             text = params.get("text")
-            if project_id is not None and not isinstance(project_id, str):
-                raise RpcError(code=-32602, message="project_id must be a string or null")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
             if not isinstance(path, str) or not path:
                 raise RpcError(code=-32602, message="path is required")
             if not isinstance(text, str):
                 raise RpcError(code=-32602, message="text is required")
+            for k, v in {"scene_id": scene_id, "beat_id": beat_id}.items():
+                if v is not None and not isinstance(v, str):
+                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
             return _jsonrpc_result(
                 req_id=req_id,
-                result=_handle_kb_write_preview(db, project_id=project_id, path=path, text=text),
+                result=_handle_play_kb_write_preview(
+                    db,
+                    act_id=act_id,
+                    scene_id=scene_id,
+                    beat_id=beat_id,
+                    path=path,
+                    text=text,
+                ),
             )
 
-        if method == "kb/write_apply":
+        if method == "play/kb/write_apply":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            project_id = params.get("project_id")
+            act_id = params.get("act_id")
+            scene_id = params.get("scene_id")
+            beat_id = params.get("beat_id")
             path = params.get("path")
             text = params.get("text")
             expected_sha256_current = params.get("expected_sha256_current")
-            if project_id is not None and not isinstance(project_id, str):
-                raise RpcError(code=-32602, message="project_id must be a string or null")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
             if not isinstance(path, str) or not path:
                 raise RpcError(code=-32602, message="path is required")
             if not isinstance(text, str):
                 raise RpcError(code=-32602, message="text is required")
+            for k, v in {"scene_id": scene_id, "beat_id": beat_id}.items():
+                if v is not None and not isinstance(v, str):
+                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
             if not isinstance(expected_sha256_current, str) or not expected_sha256_current:
                 raise RpcError(code=-32602, message="expected_sha256_current is required")
             return _jsonrpc_result(
                 req_id=req_id,
-                result=_handle_kb_write_apply(
+                result=_handle_play_kb_write_apply(
                     db,
-                    project_id=project_id,
+                    act_id=act_id,
+                    scene_id=scene_id,
+                    beat_id=beat_id,
                     path=path,
                     text=text,
                     expected_sha256_current=expected_sha256_current,

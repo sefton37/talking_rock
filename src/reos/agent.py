@@ -7,6 +7,8 @@ from typing import Any
 from .db import Database
 from .mcp_tools import Tool, ToolError, call_tool, list_tools, render_tool_result
 from .ollama import OllamaClient
+from .play_fs import list_acts as play_list_acts
+from .play_fs import read_me_markdown as play_read_me_markdown
 
 
 @dataclass(frozen=True)
@@ -21,7 +23,7 @@ class ChatAgent:
     Principles:
     - Local-only (Ollama).
     - Metadata-first; diffs only on explicit opt-in.
-    - Project-scoped via active project charter + linked repo.
+    - Repo-first; repo selection is configured via REOS_REPO_PATH or by running inside a git repo.
     """
 
     def __init__(self, *, db: Database, ollama: OllamaClient | None = None) -> None:
@@ -73,16 +75,11 @@ class ChatAgent:
         if persona_context:
             persona_prefix = persona_prefix + "\n\n" + persona_context
 
-        ollama = self._get_ollama_client()
+        play_context = self._get_play_context()
+        if play_context:
+            persona_prefix = persona_prefix + "\n\n" + play_context
 
-        # If there's no active project, try a graceful default.
-        active = self._db.get_active_project_id()
-        if not active:
-            charters = self._db.iter_project_charters()
-            if len(charters) == 1:
-                only_id = str(charters[0].get("project_id"))
-                if only_id:
-                    self._db.set_active_project_id(project_id=only_id)
+        ollama = self._get_ollama_client()
 
         wants_diff = self._user_opted_into_diff(user_text)
 
@@ -135,6 +132,38 @@ class ChatAgent:
         )
         return answer
 
+    def _get_play_context(self) -> str:
+        try:
+            acts, active_id = play_list_acts()
+        except Exception:  # noqa: BLE001
+            return ""
+
+        if not active_id:
+            return ""
+
+        act = next((a for a in acts if a.act_id == active_id), None)
+        if act is None:
+            return ""
+
+        ctx = f"ACTIVE_ACT: {act.title}".strip()
+        if act.notes.strip():
+            ctx = ctx + "\n" + f"ACT_NOTES: {act.notes.strip()}"
+
+        try:
+            me = play_read_me_markdown().strip()
+        except Exception:  # noqa: BLE001
+            me = ""
+
+        if me:
+            # Keep this small and stable; it should be identity-level context,
+            # not a task list.
+            cap = 2000
+            if len(me) > cap:
+                me = me[:cap] + "\n…"
+            ctx = ctx + "\n\n" + "ME_CONTEXT:\n" + me
+
+        return ctx
+
     def _user_opted_into_diff(self, user_text: str) -> bool:
         t = user_text.lower()
         return any(
@@ -175,9 +204,8 @@ class ChatAgent:
             + "\n\n"
             + "You are deciding which tools (if any) to call to answer the user.\n\n"
             + "Rules:\n"
-            + "- Prefer metadata-first tools (charter, git summary) before reading files.\n"
+            + "- Prefer metadata-first tools (git summary) before reading files.\n"
             + "- Only request include_diff=true if the user explicitly opted in.\n"
-            + "- The project_charter is human-authored ground truth; never invent fields or edit it.\n"
             + f"- Keep tool calls minimal (0-{tool_call_limit}).\n\n"
             + "Return JSON with this shape:\n"
             + "{\n"
@@ -197,7 +225,7 @@ class ChatAgent:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            return [ToolCall(name="reos_project_charter_get", arguments={}), ToolCall(name="reos_git_summary", arguments={})]
+            return [ToolCall(name="reos_git_summary", arguments={})]
 
         calls = payload.get("tool_calls")
         if not isinstance(calls, list):
@@ -244,8 +272,7 @@ class ChatAgent:
             + "Answer the user using the available tool outputs.\n\n"
             + "Rules:\n"
             + "- Be descriptive, non-judgmental, and local-first.\n"
-            + "- If you reference the project charter, cite the specific charter field name(s) like `core_intent` or `definition_of_done`.\n"
-            + "- If no active project is set, ask the user to open Projects and select one (that sets active project).\n"
+            + "- If no repo is configured/detected, ask the user to set REOS_REPO_PATH or run ReOS inside a git repo.\n"
             + "- Do not fabricate repository state; rely on tool outputs.\n"
             + "- If the user did not opt into diffs, do not ask for or display diffs.\n"
         )

@@ -70,50 +70,14 @@ def temp_git_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def active_project_repo(
+def configured_repo(
     temp_git_repo: Path,
     isolated_db_singleton: Path,
 ) -> Path:
-    """Create an active project charter linked to the temp git repo."""
+    """Configure the temp git repo as the active repo for tools."""
 
     from reos.db import get_db
 
     db = get_db()
-    repo_id = "repo-test-1"
-    db.upsert_repo(repo_id=repo_id, path=str(temp_git_repo))
-
-    base_now = "2025-12-19T00:00:00+00:00"
-    project_id = "proj-test-1"
-    db.insert_project_charter(
-        record={
-            "project_id": project_id,
-            "repo_id": repo_id,
-            "project_name": "Test Project",
-            "project_owner": "test",
-            "created_at": base_now,
-            "last_reaffirmed_at": base_now,
-            "core_intent": "Test intent.",
-            "problem_statement": "Test problem.",
-            "non_goals": "None.",
-            "definition_of_done": "Done.",
-            "success_signals": "Green.",
-            "failure_conditions": "Red.",
-            "sunset_criteria": "Stop.",
-            "time_horizon": "short",
-            "energy_profile": "steady",
-            "allowed_scope": "repo-scoped",
-            "forbidden_scope": "escape",
-            "primary_values": "local-first",
-            "acceptable_tradeoffs": "speed",
-            "unacceptable_tradeoffs": "surveillance",
-            "attention_budget": "default",
-            "distraction_tolerance": "low",
-            "intervention_style": "gentle",
-            "origin_story": "fixture",
-            "current_state_summary": "fixture",
-            "updated_at": base_now,
-            "ingested_at": base_now,
-        }
-    )
-    db.set_active_project_id(project_id=project_id)
+    db.set_state(key="repo_path", value=str(temp_git_repo))
     return temp_git_repo
