@@ -1,0 +1,53 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [types-all]
+        args: [--config-file=pyproject.toml]
+        files: ^src/
+
+  - repo: local
+    hooks:
+      - id: typescript-check
+        name: TypeScript Type Check
+        entry: bash -c 'cd apps/reos-tauri && npm run type-check'
+        language: system
+        files: \\.ts$
+        pass_filenames: false
+
+      - id: pytest-check
+        name: Run Python Tests
+        entry: pytest
+        language: system
+        pass_filenames: false
+        stages: [manual]
+        always_run: true
+
+      - id: vitest-check
+        name: Run TypeScript Tests
+        entry: bash -c 'cd apps/reos-tauri && npm test'
+        language: system
+        files: \\.(ts|tsx)$
+        pass_filenames: false
+        stages: [manual]

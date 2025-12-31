@@ -1,0 +1,123 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, develop, claude/**]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  python-tests:
+    name: Python Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Configure Git (for test fixtures)
+        run: |
+          git config --global user.email "ci@reos.test"
+          git config --global user.name "ReOS CI"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run type checking
+        run: mypy src/reos
+
+      - name: Run linting
+        run: ruff check src tests
+
+      - name: Run tests with coverage
+        run: pytest --cov=src/reos --cov-report=xml --cov-report=term
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: python
+          name: python-coverage
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
+
+  typescript-tests:
+    name: TypeScript Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/reos-tauri/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/reos-tauri
+        run: npm ci
+
+      - name: Run type checking
+        working-directory: apps/reos-tauri
+        run: npm run type-check
+
+      - name: Run tests with coverage
+        working-directory: apps/reos-tauri
+        run: npm run test:coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./apps/reos-tauri/coverage/coverage-final.json
+          flags: typescript
+          name: typescript-coverage
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
+
+  integration-check:
+    name: Integration Check
+    runs-on: ubuntu-latest
+    needs: [python-tests, typescript-tests]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Install Node dependencies
+        working-directory: apps/reos-tauri
+        run: npm ci
+
+      - name: Build TypeScript
+        working-directory: apps/reos-tauri
+        run: npm run build
+
+      - name: Check build artifacts
+        run: |
+          if [ ! -d "apps/reos-tauri/dist" ]; then
+            echo "Build failed: dist directory not created"
+            exit 1
+          fi
+          echo "Build successful"
