@@ -26,9 +26,9 @@ npm run test:watch        # Watch mode
 npm run test:ui           # Interactive UI
 npm run test:coverage     # With coverage report
 
-# E2E tests (when implemented)
+# E2E tests
 npm run test:e2e          # Run E2E tests
-npm run test:e2e:ui       # Interactive mode
+npm run test:e2e:ui       # Interactive UI mode
 
 # Type checking
 npm run type-check        # TypeScript
@@ -59,6 +59,12 @@ ReOS/
     │   └── test/
     │       ├── setup.ts            # Test configuration
     │       └── rpc-contracts.test.ts  # Contract tests
+    │
+    ├── e2e/                        # E2E tests
+    │   ├── app-initialization.spec.ts
+    │   ├── chat-functionality.spec.ts
+    │   ├── navigation.spec.ts
+    │   └── play-inspector.spec.ts
     │
     ├── vitest.config.ts            # Vitest configuration
     └── playwright.config.ts        # E2E configuration
@@ -428,11 +434,88 @@ rm -rf apps/reos-tauri/coverage/
 cd apps/reos-tauri && npm run test:coverage
 ```
 
+## E2E Testing with Playwright
+
+### Running E2E Tests
+
+```bash
+cd apps/reos-tauri
+
+# Run all E2E tests
+npm run test:e2e
+
+# Interactive UI mode
+npm run test:e2e:ui
+
+# Run specific test file
+npx playwright test e2e/chat-functionality.spec.ts
+
+# Run in headed mode (see browser)
+npx playwright test --headed
+
+# Debug mode
+npx playwright test --debug
+```
+
+### E2E Test Structure
+
+E2E tests are located in `apps/reos-tauri/e2e/`:
+
+- `app-initialization.spec.ts` - App loading and component rendering
+- `chat-functionality.spec.ts` - Chat interface interactions
+- `navigation.spec.ts` - Sidebar navigation and act selection
+- `play-inspector.spec.ts` - Play structure and KB integration
+
+### Writing E2E Tests
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test.describe('Feature Name', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+  });
+
+  test('should perform user action', async ({ page }) => {
+    const element = page.locator('.selector');
+    await expect(element).toBeVisible();
+    await element.click();
+    // Assert expected outcome
+  });
+});
+```
+
+### E2E Test Setup
+
+First-time setup requires installing Playwright browsers:
+
+```bash
+cd apps/reos-tauri
+npx playwright install
+```
+
+This downloads Chromium, Firefox, and WebKit browsers for testing.
+
+### E2E Testing for Tauri
+
+For testing the Tauri desktop app (not just the web interface):
+
+```bash
+# Build the app first
+npm run tauri:build
+
+# Then run E2E tests against the built app
+# (requires additional Tauri-specific test setup)
+```
+
+**Note**: Current E2E tests run against the web interface (`npm run dev`). For full desktop app testing, see [Tauri Testing Guide](https://tauri.app/v1/guides/testing/).
+
 ## Future Enhancements
 
-- [ ] **Playwright E2E tests** for critical user flows
+- [x] **Playwright E2E tests** for critical user flows ✅
 - [ ] **Visual regression testing** with Playwright screenshots
-- [ ] **Accessibility testing** with jest-axe/playwright-axe
+- [ ] **Accessibility testing** with playwright-axe
 - [ ] **Performance testing** with Lighthouse CI
 - [ ] **Load testing** for API endpoints
 - [ ] **Mutation testing** with Stryker/mutmut
