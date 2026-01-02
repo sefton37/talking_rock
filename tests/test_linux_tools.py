@@ -30,7 +30,7 @@ class TestCommandSafety:
         is_safe, warning = linux_tools.is_command_safe("rm -rf /")
         assert is_safe is False
         assert warning is not None
-        assert "dangerous" in warning.lower()
+        assert "blocked" in warning.lower()
 
     def test_dangerous_rm_rf_wildcard_blocked(self) -> None:
         """rm -rf /* should be blocked."""
@@ -376,6 +376,60 @@ class TestDataclasses:
             info.pid = 2  # type: ignore
 
 
+class TestCommandPreview:
+    """Test command preview functionality."""
+
+    def test_preview_safe_command(self) -> None:
+        """Non-destructive commands should not be marked destructive."""
+        preview = linux_tools.preview_command("ls -la")
+        assert preview.is_destructive is False
+        assert preview.can_undo is False
+
+    def test_preview_rm_command(self) -> None:
+        """rm commands should be marked as destructive."""
+        preview = linux_tools.preview_command("rm -rf /tmp/testdir")
+        assert preview.is_destructive is True
+        assert preview.can_undo is False
+        assert "Delete" in preview.description
+        assert any("Recursive" in w for w in preview.warnings)
+
+    def test_preview_mv_command(self) -> None:
+        """mv commands should be marked as destructive with undo."""
+        # Create a temp file for testing
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            temp_path = f.name
+
+        try:
+            preview = linux_tools.preview_command(f"mv {temp_path} /tmp/newname")
+            assert preview.is_destructive is True
+            assert preview.can_undo is True
+            assert preview.undo_command is not None
+            assert "Move" in preview.description
+        finally:
+            os.unlink(temp_path)
+
+    def test_preview_blocked_command(self) -> None:
+        """Dangerous commands should be blocked."""
+        preview = linux_tools.preview_command("rm -rf /")
+        assert preview.is_destructive is True
+        assert "BLOCKED" in preview.description
+        assert len(preview.warnings) > 0
+
+    def test_preview_service_command(self) -> None:
+        """Service commands should show undo options."""
+        preview = linux_tools.preview_command("systemctl stop nginx")
+        assert preview.is_destructive is True
+        assert preview.can_undo is True
+        assert preview.undo_command == "systemctl start nginx"
+
+    def test_preview_package_command(self) -> None:
+        """Package commands should be marked destructive."""
+        preview = linux_tools.preview_command("apt install vim")
+        assert preview.is_destructive is True
+        assert any("Package" in w for w in preview.warnings)
+
+
 class TestIntegrationWithMcpTools:
     """Test integration with MCP tools.
 
@@ -400,6 +454,7 @@ class TestIntegrationWithMcpTools:
 
         linux_tool_names = [
             "linux_run_command",
+            "linux_preview_command",
             "linux_system_info",
             "linux_network_info",
             "linux_list_processes",

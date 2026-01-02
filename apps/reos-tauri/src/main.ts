@@ -1,132 +1,29 @@
-import { invoke } from '@tauri-apps/api/core';
+/**
+ * ReOS Desktop Application - Natural Language Linux
+ *
+ * Main entry point for the Tauri-based desktop UI.
+ * Communicates with the Python kernel via JSON-RPC over stdio.
+ */
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { z } from 'zod';
 
 import './style.css';
 
-const JsonRpcResponseSchema = z.object({
-  jsonrpc: z.literal('2.0'),
-  id: z.union([z.string(), z.number(), z.null()]).optional(),
-  result: z.unknown().optional(),
-  error: z
-    .object({
-      code: z.number(),
-      message: z.string(),
-      data: z.unknown().optional()
-    })
-    .optional()
-});
-
-type ChatRespondResult = {
-  answer: string;
-};
-
-type SystemInfoResult = {
-  hostname: string;
-  kernel: string;
-  distro: string;
-  uptime: string;
-  cpu_model: string;
-  cpu_cores: number;
-  memory_total_mb: number;
-  memory_used_mb: number;
-  memory_percent: number;
-  disk_total_gb: number;
-  disk_used_gb: number;
-  disk_percent: number;
-  load_avg: [number, number, number];
-};
-
-type ToolCallResult = {
-  result?: unknown;
-  error?: { code: string; message: string };
-};
-
-type PlayMeReadResult = {
-  markdown: string;
-};
-
-type PlayActsListResult = {
-  active_act_id: string | null;
-  acts: Array<{ act_id: string; title: string; active: boolean; notes: string }>;
-};
-
-type PlayScenesListResult = {
-  scenes: Array<{
-    scene_id: string;
-    title: string;
-    intent: string;
-    status: string;
-    time_horizon: string;
-    notes: string;
-  }>;
-};
-
-type PlayBeatsListResult = {
-  beats: Array<{ beat_id: string; title: string; status: string; notes: string; link: string | null }>;
-};
-
-type PlayActsCreateResult = {
-  created_act_id: string;
-  acts: Array<{ act_id: string; title: string; active: boolean; notes: string }>;
-};
-
-type PlayScenesMutationResult = {
-  scenes: PlayScenesListResult['scenes'];
-};
-
-type PlayBeatsMutationResult = {
-  beats: PlayBeatsListResult['beats'];
-};
-
-type PlayKbListResult = {
-  files: string[];
-};
-
-type PlayKbReadResult = {
-  path: string;
-  text: string;
-};
-
-type PlayKbWritePreviewResult = {
-  path: string;
-  exists: boolean;
-  sha256_current: string;
-  expected_sha256_current: string;
-  sha256_new: string;
-  diff: string;
-};
-
-type PlayKbWriteApplyResult = {
-  ok: boolean;
-  sha256_current: string;
-};
-
-class KernelError extends Error {
-  code: number;
-
-  constructor(message: string, code: number) {
-    super(message);
-    this.name = 'KernelError';
-    this.code = code;
-  }
-}
-
-
-async function kernelRequest(method: string, params: unknown): Promise<unknown> {
-  const raw = await invoke('kernel_request', { method, params });
-  const parsed = JsonRpcResponseSchema.parse(raw);
-  if (parsed.error) {
-    throw new KernelError(parsed.error.message, parsed.error.code);
-  }
-  return parsed.result;
-}
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-  return node;
-}
+// Modular imports
+import { kernelRequest, KernelError } from './kernel';
+import { el, rowHeader, label, textInput, textArea, smallButton } from './dom';
+import type {
+  ChatRespondResult,
+  SystemInfoResult,
+  PlayMeReadResult,
+  PlayActsListResult,
+  PlayScenesListResult,
+  PlayBeatsListResult,
+  PlayActsCreateResult,
+  PlayKbListResult,
+  PlayKbReadResult,
+  PlayKbWritePreviewResult,
+  PlayKbWriteApplyResult
+} from './types';
 
 function buildUi() {
   const query = new URLSearchParams(window.location.search);
@@ -393,59 +290,8 @@ function buildUi() {
 
   meBtn.addEventListener('click', () => void openMeWindow());
 
-  function rowHeader(title: string) {
-    const h = el('div');
-    h.textContent = title;
-    h.style.fontWeight = '600';
-    h.style.margin = '10px 0 6px';
-    return h;
-  }
-
-  function label(text: string) {
-    const l = el('div');
-    l.textContent = text;
-    l.style.fontSize = '12px';
-    l.style.opacity = '0.8';
-    l.style.marginBottom = '4px';
-    return l;
-  }
-
-  function textInput(value: string) {
-    const i = el('input') as HTMLInputElement;
-    i.type = 'text';
-    i.value = value;
-    i.style.width = '100%';
-    i.style.boxSizing = 'border-box';
-    i.style.padding = '8px 10px';
-    i.style.border = '1px solid rgba(209, 213, 219, 0.7)';
-    i.style.borderRadius = '10px';
-    i.style.background = 'rgba(255, 255, 255, 0.55)';
-    return i;
-  }
-
-  function textArea(value: string, heightPx = 90) {
-    const t = el('textarea') as HTMLTextAreaElement;
-    t.value = value;
-    t.style.width = '100%';
-    t.style.boxSizing = 'border-box';
-    t.style.padding = '8px 10px';
-    t.style.border = '1px solid rgba(209, 213, 219, 0.7)';
-    t.style.borderRadius = '10px';
-    t.style.background = 'rgba(255, 255, 255, 0.55)';
-    t.style.minHeight = `${heightPx}px`;
-    t.style.resize = 'vertical';
-    return t;
-  }
-
-  function smallButton(text: string) {
-    const b = el('button') as HTMLButtonElement;
-    b.textContent = text;
-    b.style.padding = '8px 10px';
-    b.style.border = '1px solid rgba(209, 213, 219, 0.65)';
-    b.style.borderRadius = '10px';
-    b.style.background = 'rgba(255, 255, 255, 0.35)';
-    return b;
-  }
+  // Helper functions (rowHeader, label, textInput, textArea, smallButton)
+  // are now imported from ./dom.ts
 
   async function refreshBeats(actId: string, sceneId: string) {
     const res = (await kernelRequest('play/beats/list', { act_id: actId, scene_id: sceneId })) as PlayBeatsListResult;
@@ -782,6 +628,7 @@ function buildUi() {
         void (async () => {
           const title = newTitle.value.trim();
           if (!title) return;
+          if (!activeActId || !selectedSceneId) return;
           await kernelRequest('play/beats/create', {
             act_id: activeActId,
             scene_id: selectedSceneId,
@@ -956,7 +803,7 @@ function buildUi() {
     sceneCreateBtn.addEventListener('click', () => {
       void (async () => {
         const title = sceneCreateTitle.value.trim();
-        if (!title) return;
+        if (!title || !activeActId) return;
         await kernelRequest('play/scenes/create', { act_id: activeActId, title });
         await refreshScenes(activeActId);
         renderPlayInspector();

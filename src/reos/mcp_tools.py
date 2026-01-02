@@ -119,6 +119,22 @@ def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="linux_preview_command",
+            description=(
+                "Preview what a command would do BEFORE executing it. Shows affected files, "
+                "warnings, and whether the action can be undone. Use this for destructive commands "
+                "like rm, mv, package installs, or service management to let users confirm first."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command to preview"},
+                    "cwd": {"type": "string", "description": "Working directory for resolving paths"},
+                },
+                "required": ["command"],
+            },
+        ),
+        Tool(
             name="linux_system_info",
             description=(
                 "Get comprehensive Linux system information including hostname, kernel, distro, "
@@ -434,6 +450,23 @@ def call_tool(db: Database, *, name: str, arguments: dict[str, Any] | None) -> A
             "returncode": result.returncode,
             "stdout": result.stdout,
             "stderr": result.stderr,
+        }
+
+    if name == "linux_preview_command":
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ToolError(code="invalid_args", message="command is required")
+
+        cwd = args.get("cwd")
+        preview = linux_tools.preview_command(command, cwd=cwd)
+        return {
+            "command": preview.command,
+            "is_destructive": preview.is_destructive,
+            "description": preview.description,
+            "affected_paths": preview.affected_paths,
+            "warnings": preview.warnings,
+            "can_undo": preview.can_undo,
+            "undo_command": preview.undo_command,
         }
 
     if name == "linux_system_info":

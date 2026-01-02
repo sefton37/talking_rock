@@ -13,6 +13,7 @@ This module provides tools for interacting with the Linux system:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -21,18 +22,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Dangerous commands that should never be executed
-DANGEROUS_COMMANDS = frozenset([
-    "rm -rf /",
-    "rm -rf /*",
-    "dd if=/dev/zero of=/dev/sda",
-    "mkfs",
-    ":(){:|:&};:",  # Fork bomb
-    "chmod -R 777 /",
-    "chmod -R 000 /",
-    "> /dev/sda",
-    "mv / /dev/null",
-])
+logger = logging.getLogger(__name__)
+
+# Dangerous commands that should never be executed (exact patterns)
+# These use regex to avoid false positives like "rm -rf /tmp/testdir"
+DANGEROUS_COMMAND_PATTERNS = [
+    r"^rm\s+(-[rf]+\s+)*/$",           # rm -rf /
+    r"^rm\s+(-[rf]+\s+)*/\*",          # rm -rf /*
+    r"dd\s+if=/dev/zero\s+of=/dev/sd", # dd to disk
+    r"^mkfs\s+/dev/sd",                # mkfs on physical disk
+    r":\(\)\{:\|:&\};:",               # Fork bomb
+    r"^chmod\s+-R\s+[07]{3}\s+/$",     # chmod -R 777 /
+    r">\s*/dev/sd",                    # Redirect to disk
+    r"^mv\s+/\s+/dev/null",            # mv / /dev/null
+]
 
 # Commands that require confirmation
 RISKY_PATTERNS = [
@@ -133,8 +136,8 @@ def detect_distro() -> str:
         )
         if result.returncode == 0:
             return result.stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to detect distro: %s", e)
     return "Linux (unknown distro)"
 
 
@@ -143,17 +146,17 @@ def is_command_safe(command: str) -> tuple[bool, str | None]:
 
     Returns (is_safe, warning_message).
     """
-    cmd_lower = command.lower().strip()
+    cmd_stripped = command.strip()
 
-    # Check for obviously dangerous commands
-    for dangerous in DANGEROUS_COMMANDS:
-        if dangerous in cmd_lower:
-            return False, f"Blocked dangerous command pattern: {dangerous}"
+    # Check for obviously dangerous commands using regex patterns
+    for pattern in DANGEROUS_COMMAND_PATTERNS:
+        if re.search(pattern, cmd_stripped, re.IGNORECASE):
+            return False, f"Blocked dangerous command matching pattern: {pattern}"
 
     # Check for risky patterns that need confirmation
     for pattern in RISKY_PATTERNS:
         if re.search(pattern, command, re.IGNORECASE):
-            return True, f"This command matches a risky pattern and could cause data loss"
+            return True, "This command matches a risky pattern and could cause data loss"
 
     return True, None
 
@@ -226,6 +229,177 @@ def execute_command(
         )
 
 
+@dataclass(frozen=True)
+class CommandPreview:
+    """Preview of what a command would do before execution."""
+    command: str
+    is_destructive: bool
+    description: str
+    affected_paths: list[str]
+    warnings: list[str]
+    can_undo: bool
+    undo_command: str | None
+
+
+def preview_command(command: str, cwd: str | None = None) -> CommandPreview:
+    """Analyze a command and preview what it would do.
+
+    This allows users to see the effects before executing destructive commands.
+    Supports the principle: "Mistakes are recoverable - you can say 'wait, undo that'"
+
+    Args:
+        command: The command to preview
+        cwd: Working directory for resolving relative paths
+
+    Returns:
+        CommandPreview with details about what the command would do
+    """
+    is_safe, warning = is_command_safe(command)
+    working_dir = Path(cwd) if cwd else Path.cwd()
+
+    affected_paths: list[str] = []
+    warnings: list[str] = []
+    description = "Execute command"
+    is_destructive = False
+    can_undo = False
+    undo_command: str | None = None
+
+    if warning:
+        warnings.append(warning)
+
+    if not is_safe:
+        return CommandPreview(
+            command=command,
+            is_destructive=True,
+            description="BLOCKED: Dangerous command",
+            affected_paths=[],
+            warnings=warnings,
+            can_undo=False,
+            undo_command=None,
+        )
+
+    # Analyze rm commands
+    rm_match = re.match(r'^rm\s+(.*)', command, re.IGNORECASE)
+    if rm_match:
+        is_destructive = True
+        args = rm_match.group(1)
+        description = "Delete files/directories"
+
+        # Parse flags and paths
+        parts = args.split()
+        paths_to_check = []
+        for part in parts:
+            if not part.startswith('-'):
+                paths_to_check.append(part)
+
+        for path_str in paths_to_check:
+            # Expand globs
+            import glob
+            expanded = glob.glob(str(working_dir / path_str))
+            if expanded:
+                affected_paths.extend(expanded[:50])  # Limit to 50 paths
+            else:
+                # Path doesn't exist yet or is a literal
+                full_path = working_dir / path_str
+                if full_path.exists():
+                    affected_paths.append(str(full_path))
+
+        if '-r' in args or '-rf' in args or '-fr' in args:
+            warnings.append("Recursive deletion - will delete entire directory trees")
+        if '-f' in args:
+            warnings.append("Force mode - will not prompt for confirmation")
+
+        can_undo = False  # rm cannot be undone without backup
+        undo_command = None
+
+    # Analyze mv commands
+    mv_match = re.match(r'^mv\s+(.+)\s+(\S+)$', command)
+    if mv_match:
+        is_destructive = True
+        sources = mv_match.group(1).split()
+        dest = mv_match.group(2)
+        description = f"Move/rename to {dest}"
+
+        for src in sources:
+            if not src.startswith('-'):
+                full_path = working_dir / src
+                if full_path.exists():
+                    affected_paths.append(str(full_path))
+
+        if affected_paths:
+            can_undo = True
+            # Generate undo command (simplified - assumes single file move)
+            if len(affected_paths) == 1:
+                undo_command = f"mv {dest} {affected_paths[0]}"
+
+    # Analyze package manager operations
+    pkg_patterns = [
+        (r'^(apt|apt-get)\s+(install|remove|purge)', "Package installation/removal"),
+        (r'^dnf\s+(install|remove)', "Package installation/removal"),
+        (r'^pacman\s+-[SR]', "Package installation/removal"),
+        (r'^yum\s+(install|remove)', "Package installation/removal"),
+    ]
+
+    for pattern, desc in pkg_patterns:
+        if re.match(pattern, command, re.IGNORECASE):
+            is_destructive = True
+            description = desc
+            warnings.append("Package operations modify system-wide software")
+
+            # Try dry-run to see what would change
+            dry_run_cmd = None
+            if 'apt' in command.lower():
+                dry_run_cmd = command + ' --dry-run'
+            elif 'dnf' in command.lower():
+                dry_run_cmd = command + ' --assumeno'
+
+            if dry_run_cmd:
+                try:
+                    result = subprocess.run(
+                        dry_run_cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        cwd=cwd,
+                    )
+                    # Package names from dry-run output would be in affected_paths
+                    for line in result.stdout.splitlines()[:20]:
+                        if line.strip():
+                            affected_paths.append(f"[package] {line.strip()}")
+                except Exception as e:
+                    logger.debug("Failed to run package dry-run: %s", e)
+            break
+
+    # Analyze service management
+    if re.match(r'^(systemctl|service)\s+(stop|disable|mask)', command, re.IGNORECASE):
+        is_destructive = True
+        description = "Stop/disable system service"
+        warnings.append("Stopping services may affect system functionality")
+        can_undo = True
+
+        # Extract service name and create undo command
+        service_match = re.search(r'(stop|disable|mask)\s+(\S+)', command)
+        if service_match:
+            action, service = service_match.groups()
+            undo_actions = {'stop': 'start', 'disable': 'enable', 'mask': 'unmask'}
+            undo_action = undo_actions.get(action, 'start')
+            if 'systemctl' in command:
+                undo_command = f"systemctl {undo_action} {service}"
+            else:
+                undo_command = f"service {service} {undo_action}"
+
+    return CommandPreview(
+        command=command,
+        is_destructive=is_destructive,
+        description=description,
+        affected_paths=affected_paths,
+        warnings=warnings,
+        can_undo=can_undo,
+        undo_command=undo_command,
+    )
+
+
 def get_system_info() -> SystemInfo:
     """Get comprehensive system information."""
     hostname = "unknown"
@@ -245,15 +419,15 @@ def get_system_info() -> SystemInfo:
         hostname = subprocess.run(
             ["hostname"], capture_output=True, text=True, timeout=5
         ).stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get hostname: %s", e)
 
     try:
         kernel = subprocess.run(
             ["uname", "-r"], capture_output=True, text=True, timeout=5
         ).stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get kernel version: %s", e)
 
     distro = detect_distro()
 
@@ -264,8 +438,8 @@ def get_system_info() -> SystemInfo:
             hours = int((uptime_seconds % 86400) // 3600)
             minutes = int((uptime_seconds % 3600) // 60)
             uptime = f"{days}d {hours}h {minutes}m"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get uptime: %s", e)
 
     try:
         with open("/proc/cpuinfo") as f:
@@ -274,8 +448,8 @@ def get_system_info() -> SystemInfo:
                     cpu_model = line.split(":", 1)[1].strip()
                     break
         cpu_cores = os.cpu_count() or 0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get CPU info: %s", e)
 
     try:
         with open("/proc/meminfo") as f:
@@ -292,8 +466,8 @@ def get_system_info() -> SystemInfo:
             memory_used_mb = (meminfo.get("MemTotal", 0) - mem_available) // 1024
             if memory_total_mb > 0:
                 memory_percent = (memory_used_mb / memory_total_mb) * 100
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get memory info: %s", e)
 
     try:
         stat = os.statvfs("/")
@@ -301,13 +475,13 @@ def get_system_info() -> SystemInfo:
         disk_used_gb = ((stat.f_blocks - stat.f_bfree) * stat.f_frsize) / (1024**3)
         if disk_total_gb > 0:
             disk_percent = (disk_used_gb / disk_total_gb) * 100
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get disk info: %s", e)
 
     try:
         load_avg = os.getloadavg()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get load average: %s", e)
 
     return SystemInfo(
         hostname=hostname,
@@ -354,7 +528,8 @@ def get_network_info() -> dict[str, Any]:
                     "mac": iface.get("address"),
                     "addresses": addrs,
                 }
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to parse JSON network info, falling back: %s", e)
         # Fallback to basic parsing
         try:
             result = subprocess.run(
@@ -378,8 +553,8 @@ def get_network_info() -> dict[str, Any]:
                                 "family": "inet",
                                 "address": match.group(1).split("/")[0],
                             })
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.debug("Failed to get network info: %s", e2)
 
     return interfaces
 
@@ -409,8 +584,8 @@ def list_processes(sort_by: str = "cpu", limit: int = 20) -> list[ProcessInfo]:
                         status=parts[7] if len(parts) > 7 else "?",
                         command=parts[10] if len(parts) > 10 else "",
                     ))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to list processes: %s", e)
 
     return processes
 
@@ -437,8 +612,8 @@ def list_services(filter_active: bool = False) -> list[ServiceInfo]:
                         sub_state=parts[3],
                         description=parts[4] if len(parts) > 4 else "",
                     ))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to list services: %s", e)
 
     return services
 
@@ -554,8 +729,8 @@ def search_packages(query: str, limit: int = 20) -> list[dict[str, str]]:
                             packages.append({"name": name, "description": desc})
                     if len(packages) >= limit:
                         break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to search packages: %s", e)
 
     return packages
 
@@ -663,8 +838,8 @@ def list_installed_packages(search: str | None = None) -> list[str]:
                         pkg = parts[0]
                         if not search or search.lower() in pkg.lower():
                             packages.append(pkg)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to list installed packages: %s", e)
 
     return packages[:500]  # Limit output
 
@@ -718,7 +893,8 @@ def list_directory(
                     info["size"] = stat.st_size
                     info["mode"] = oct(stat.st_mode)[-3:]
                     info["modified"] = stat.st_mtime
-                except Exception:
+                except OSError:
+                    # Expected for broken symlinks, inaccessible files
                     pass
 
             entries.append(info)
@@ -770,8 +946,8 @@ def find_files(
                     results.append(os.path.join(root, filename))
                     if len(results) >= limit:
                         return results
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Error while searching files in %s: %s", directory, e)
 
     return results
 
@@ -826,7 +1002,8 @@ def check_docker_available() -> bool:
             timeout=5,
         )
         return result.returncode == 0
-    except Exception:
+    except Exception as e:
+        logger.debug("Docker not available: %s", e)
         return False
 
 
@@ -853,8 +1030,8 @@ def list_docker_containers(all_containers: bool = False) -> list[dict[str, str]]
                         "status": parts[2],
                         "name": parts[3],
                     })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to list Docker containers: %s", e)
 
     return containers
 
@@ -883,8 +1060,8 @@ def list_docker_images() -> list[dict[str, str]]:
                         "size": parts[2],
                         "id": parts[3],
                     })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to list Docker images: %s", e)
 
     return images
 
