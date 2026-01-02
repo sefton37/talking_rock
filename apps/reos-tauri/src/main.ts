@@ -107,6 +107,133 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
   return node;
 }
 
+const REOS_ASCII = `
+██████╗ ███████╗ ██████╗ ███████╗
+██╔══██╗██╔════╝██╔═══██╗██╔════╝
+██████╔╝█████╗  ██║   ██║███████╗
+██╔══██╗██╔══╝  ██║   ██║╚════██║
+██║  ██║███████╗╚██████╔╝███████║
+╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚══════╝
+`.trim();
+
+function buildLoginScreen(onLogin: () => void) {
+  const root = document.getElementById('app');
+  if (!root) return;
+
+  root.innerHTML = '';
+
+  const screen = el('div');
+  screen.className = 'login-screen';
+
+  // ASCII Art Title
+  const ascii = el('pre');
+  ascii.className = 'login-ascii';
+  ascii.textContent = REOS_ASCII;
+
+  // Tagline
+  const tagline = el('div');
+  tagline.className = 'login-tagline';
+  tagline.textContent = 'attention is labor';
+
+  // Byline
+  const byline = el('div');
+  byline.className = 'login-byline';
+  byline.textContent = 'Talking Rock';
+
+  // Login Card
+  const card = el('div');
+  card.className = 'login-card';
+
+  // Username field
+  const usernameField = el('div');
+  usernameField.className = 'login-field';
+  const usernameLabel = el('label');
+  usernameLabel.className = 'login-label';
+  usernameLabel.textContent = 'Username';
+  const usernameInput = el('input') as HTMLInputElement;
+  usernameInput.className = 'login-input';
+  usernameInput.type = 'text';
+  usernameInput.placeholder = 'Enter your username';
+  usernameField.appendChild(usernameLabel);
+  usernameField.appendChild(usernameInput);
+
+  // Password field
+  const passwordField = el('div');
+  passwordField.className = 'login-field';
+  const passwordLabel = el('label');
+  passwordLabel.className = 'login-label';
+  passwordLabel.textContent = 'Password';
+  const passwordInput = el('input') as HTMLInputElement;
+  passwordInput.className = 'login-input';
+  passwordInput.type = 'password';
+  passwordInput.placeholder = 'Enter your password';
+  passwordField.appendChild(passwordLabel);
+  passwordField.appendChild(passwordInput);
+
+  // Login button
+  const loginBtn = el('button');
+  loginBtn.className = 'login-btn';
+  loginBtn.textContent = 'Sign In';
+
+  // Recovery link
+  const recovery = el('a');
+  recovery.className = 'login-recovery';
+  recovery.textContent = 'Forgot your credentials?';
+
+  // Error message area
+  const errorMsg = el('div');
+  errorMsg.className = 'login-error';
+
+  card.appendChild(usernameField);
+  card.appendChild(passwordField);
+  card.appendChild(loginBtn);
+  card.appendChild(recovery);
+  card.appendChild(errorMsg);
+
+  screen.appendChild(ascii);
+  screen.appendChild(tagline);
+  screen.appendChild(byline);
+  screen.appendChild(card);
+
+  root.appendChild(screen);
+
+  // Handle login
+  const handleLogin = () => {
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value;
+
+    if (!username) {
+      errorMsg.textContent = 'Please enter your username';
+      return;
+    }
+    if (!password) {
+      errorMsg.textContent = 'Please enter your password';
+      return;
+    }
+
+    // For now, accept any non-empty credentials
+    // In a real app, this would validate against a backend
+    errorMsg.textContent = '';
+    onLogin();
+  };
+
+  loginBtn.addEventListener('click', handleLogin);
+  passwordInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleLogin();
+  });
+  usernameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') passwordInput.focus();
+  });
+
+  // Handle recovery
+  recovery.addEventListener('click', () => {
+    errorMsg.textContent = 'Recovery feature coming soon...';
+  });
+
+  // Focus username input
+  usernameInput.focus();
+}
+
 function buildUi() {
   const query = new URLSearchParams(window.location.search);
   if (query.get('view') === 'me') {
@@ -994,4 +1121,20 @@ async function buildMeWindow() {
   }
 }
 
-buildUi();
+// Entry point: Show login screen first, then main UI after successful login
+function start() {
+  const query = new URLSearchParams(window.location.search);
+
+  // Secondary windows (like "Me") skip login
+  if (query.get('view')) {
+    buildUi();
+    return;
+  }
+
+  // Show login screen for main window
+  buildLoginScreen(() => {
+    buildUi();
+  });
+}
+
+start();

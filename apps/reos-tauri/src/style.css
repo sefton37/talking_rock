@@ -161,3 +161,130 @@ body,
 .send-btn:hover {
 	background: rgba(255, 255, 255, 0.38);
 }
+
+/* Login Screen */
+.login-screen {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	min-height: 100vh;
+	background: linear-gradient(135deg, rgba(17, 24, 39, 0.95) 0%, rgba(31, 41, 55, 0.98) 100%);
+	font-family: system-ui, -apple-system, sans-serif;
+}
+
+.login-ascii {
+	font-family: 'Courier New', Courier, monospace;
+	font-size: 14px;
+	line-height: 1.15;
+	color: rgba(221, 107, 32, 0.95);
+	white-space: pre;
+	text-align: center;
+	margin-bottom: 12px;
+	text-shadow: 0 0 20px rgba(221, 107, 32, 0.3);
+}
+
+.login-tagline {
+	font-size: 14px;
+	color: rgba(255, 255, 255, 0.6);
+	letter-spacing: 0.15em;
+	text-transform: lowercase;
+	margin-bottom: 8px;
+}
+
+.login-byline {
+	font-size: 11px;
+	color: rgba(255, 255, 255, 0.35);
+	letter-spacing: 0.1em;
+	margin-bottom: 48px;
+}
+
+.login-card {
+	width: 100%;
+	max-width: 340px;
+	padding: 32px;
+	background: rgba(255, 255, 255, 0.06);
+	backdrop-filter: blur(20px);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 20px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.login-field {
+	margin-bottom: 20px;
+}
+
+.login-label {
+	display: block;
+	font-size: 12px;
+	color: rgba(255, 255, 255, 0.5);
+	margin-bottom: 8px;
+	letter-spacing: 0.05em;
+}
+
+.login-input {
+	width: 100%;
+	box-sizing: border-box;
+	padding: 14px 16px;
+	font-size: 15px;
+	color: rgba(255, 255, 255, 0.95);
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 12px;
+	outline: none;
+	transition: border-color 0.2s, background 0.2s;
+}
+
+.login-input::placeholder {
+	color: rgba(255, 255, 255, 0.3);
+}
+
+.login-input:focus {
+	border-color: rgba(221, 107, 32, 0.6);
+	background: rgba(255, 255, 255, 0.1);
+}
+
+.login-btn {
+	width: 100%;
+	padding: 14px 20px;
+	font-size: 15px;
+	font-weight: 500;
+	color: rgba(255, 255, 255, 0.95);
+	background: rgba(221, 107, 32, 0.85);
+	border: none;
+	border-radius: 12px;
+	cursor: pointer;
+	transition: background 0.2s, transform 0.1s;
+	margin-top: 8px;
+}
+
+.login-btn:hover {
+	background: rgba(221, 107, 32, 1);
+}
+
+.login-btn:active {
+	transform: scale(0.98);
+}
+
+.login-recovery {
+	display: block;
+	text-align: center;
+	margin-top: 20px;
+	font-size: 13px;
+	color: rgba(255, 255, 255, 0.4);
+	text-decoration: none;
+	cursor: pointer;
+	transition: color 0.2s;
+}
+
+.login-recovery:hover {
+	color: rgba(221, 107, 32, 0.8);
+}
+
+.login-error {
+	font-size: 13px;
+	color: rgba(239, 68, 68, 0.9);
+	text-align: center;
+	margin-top: 16px;
+	min-height: 20px;
+}
