@@ -1,0 +1,101 @@
+{
+  "name": "ReOS Development",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12",
+      "installTools": true
+    },
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "stable"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "rust-lang.rust-analyzer",
+        "tauri-apps.tauri-vscode",
+        "bradlc.vscode-tailwindcss",
+        "esbenp.prettier-vscode",
+        "eamodio.gitlens",
+        "usernamehw.errorlens",
+        "gruntfuggly.todo-tree",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspaces/ReOS/.venv/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "[python]": {
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit",
+            "source.organizeImports": "explicit"
+          },
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "[rust]": {
+          "editor.formatOnSave": true,
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        },
+        "[typescript]": {
+          "editor.formatOnSave": true,
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "rust-analyzer.checkOnSave.command": "clippy",
+        "files.watcherExclude": {
+          "**/target/**": true,
+          "**/.venv/**": true,
+          "**/node_modules/**": true
+        }
+      }
+    }
+  },
+
+  "postCreateCommand": "bash -c './scripts/bootstrap.sh && pip install pre-commit && pre-commit install'",
+
+  "forwardPorts": [
+    8010,
+    1420,
+    11434
+  ],
+
+  "portsAttributes": {
+    "8010": {
+      "label": "ReOS Kernel",
+      "onAutoForward": "notify"
+    },
+    "1420": {
+      "label": "Vite Dev Server",
+      "onAutoForward": "notify"
+    },
+    "11434": {
+      "label": "Ollama",
+      "onAutoForward": "ignore"
+    }
+  },
+
+  "remoteEnv": {
+    "REOS_LOG_LEVEL": "DEBUG",
+    "REOS_OLLAMA_URL": "http://localhost:11434"
+  },
+
+  "mounts": [
+    "source=${localEnv:HOME}/.ollama,target=/home/vscode/.ollama,type=bind,consistency=cached"
+  ],
+
+  "containerEnv": {
+    "SHELL": "/bin/bash"
+  },
+
+  "remoteUser": "vscode"
+}

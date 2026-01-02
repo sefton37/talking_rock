@@ -14,11 +14,56 @@
       {
         "title": "ReOS",
         "width": 1200,
-        "height": 800
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob:",
+        "font-src": "'self' data:",
+        "connect-src": "'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
+        "frame-src": "'none'",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'self'"
+      },
+      "dangerousDisableAssetCspModification": false
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
     }
-  }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "identifier": "dev.reos.ReOS",
+    "publisher": "ReOS Contributors",
+    "category": "Development",
+    "shortDescription": "Local-first attention kernel companion",
+    "longDescription": "ReOS is a local-first, Git-first attention kernel companion for developers. It observes your working tree and commits locally, providing gentle checkpoints when your changes appear to drift from your charter or roadmap.",
+    "linux": {
+      "appId": "dev.reos.ReOS",
+      "section": "utils",
+      "priority": "optional"
+    }
+  },
+  "plugins": {}
 }
