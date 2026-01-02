@@ -42,6 +42,15 @@ from .play_fs import update_scene as play_update_scene
 
 _JSON = dict[str, Any]
 
+# Input validation limits to prevent resource exhaustion
+MAX_TITLE_LENGTH = 500
+MAX_NOTES_LENGTH = 50_000  # 50KB
+MAX_TEXT_LENGTH = 500_000  # 500KB for KB files
+MAX_PATH_LENGTH = 1000
+MAX_ID_LENGTH = 200
+MAX_SYSTEM_PROMPT_LENGTH = 100_000  # 100KB
+MAX_LIST_LIMIT = 10_000
+
 
 class RpcError(RuntimeError):
     def __init__(self, code: int, message: str, data: Any | None = None) -> None:
@@ -49,6 +58,41 @@ class RpcError(RuntimeError):
         self.code = code
         self.message = message
         self.data = data
+
+
+def _validate_string_length(value: str, max_length: int, field_name: str) -> None:
+    """Validate that a string doesn't exceed the maximum length."""
+    if len(value) > max_length:
+        raise RpcError(
+            code=-32602,
+            message=f"{field_name} exceeds maximum length of {max_length} characters",
+        )
+
+
+def _validate_required_string(
+    params: dict[str, Any], key: str, max_length: int, *, allow_empty: bool = False
+) -> str:
+    """Extract and validate a required string parameter."""
+    value = params.get(key)
+    if not isinstance(value, str):
+        raise RpcError(code=-32602, message=f"{key} is required")
+    if not allow_empty and not value.strip():
+        raise RpcError(code=-32602, message=f"{key} is required")
+    _validate_string_length(value, max_length, key)
+    return value
+
+
+def _validate_optional_string(
+    params: dict[str, Any], key: str, max_length: int, *, default: str | None = None
+) -> str | None:
+    """Extract and validate an optional string parameter."""
+    value = params.get(key, default)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RpcError(code=-32602, message=f"{key} must be a string or null")
+    _validate_string_length(value, max_length, key)
+    return value
 
 
 def _jsonrpc_error(*, req_id: Any, code: int, message: str, data: Any | None = None) -> _JSON:
@@ -138,11 +182,22 @@ def _handle_persona_upsert(db: Database, *, persona: dict[str, Any]) -> dict[str
     if missing:
         raise RpcError(code=-32602, message=f"persona missing fields: {', '.join(missing)}")
 
+    # Validate string field lengths
+    persona_id = str(persona["id"])
+    name = str(persona["name"])
+    system_prompt = str(persona["system_prompt"])
+    default_context = str(persona["default_context"])
+
+    _validate_string_length(persona_id, MAX_ID_LENGTH, "id")
+    _validate_string_length(name, MAX_TITLE_LENGTH, "name")
+    _validate_string_length(system_prompt, MAX_SYSTEM_PROMPT_LENGTH, "system_prompt")
+    _validate_string_length(default_context, MAX_SYSTEM_PROMPT_LENGTH, "default_context")
+
     db.upsert_agent_persona(
-        persona_id=str(persona["id"]),
-        name=str(persona["name"]),
-        system_prompt=str(persona["system_prompt"]),
-        default_context=str(persona["default_context"]),
+        persona_id=persona_id,
+        name=name,
+        system_prompt=system_prompt,
+        default_context=default_context,
         temperature=float(persona["temperature"]),
         top_p=float(persona["top_p"]),
         tool_call_limit=int(persona["tool_call_limit"]),
@@ -519,9 +574,7 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
         if method == "chat/respond":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            text = params.get("text")
-            if not isinstance(text, str) or not text.strip():
-                raise RpcError(code=-32602, message="text is required")
+            text = _validate_required_string(params, "text", MAX_TEXT_LENGTH)
             result = _handle_chat_respond(db, text=text)
             return _jsonrpc_result(req_id=req_id, result=result)
 
@@ -536,12 +589,8 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
         if method == "state/set":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            key = params.get("key")
-            value = params.get("value")
-            if not isinstance(key, str) or not key:
-                raise RpcError(code=-32602, message="key is required")
-            if value is not None and not isinstance(value, str):
-                raise RpcError(code=-32602, message="value must be a string or null")
+            key = _validate_required_string(params, "key", MAX_ID_LENGTH)
+            value = _validate_optional_string(params, "value", MAX_NOTES_LENGTH)
             return _jsonrpc_result(req_id=req_id, result=_handle_state_set(db, key=key, value=value))
 
         if method == "personas/list":
@@ -580,26 +629,16 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
         if method == "play/acts/create":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            title = params.get("title")
-            notes = params.get("notes")
-            if not isinstance(title, str) or not title.strip():
-                raise RpcError(code=-32602, message="title is required")
-            if notes is not None and not isinstance(notes, str):
-                raise RpcError(code=-32602, message="notes must be a string or null")
+            title = _validate_required_string(params, "title", MAX_TITLE_LENGTH)
+            notes = _validate_optional_string(params, "notes", MAX_NOTES_LENGTH)
             return _jsonrpc_result(req_id=req_id, result=_handle_play_acts_create(db, title=title, notes=notes))
 
         if method == "play/acts/update":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            act_id = params.get("act_id")
-            title = params.get("title")
-            notes = params.get("notes")
-            if not isinstance(act_id, str) or not act_id:
-                raise RpcError(code=-32602, message="act_id is required")
-            if title is not None and not isinstance(title, str):
-                raise RpcError(code=-32602, message="title must be a string or null")
-            if notes is not None and not isinstance(notes, str):
-                raise RpcError(code=-32602, message="notes must be a string or null")
+            act_id = _validate_required_string(params, "act_id", MAX_ID_LENGTH)
+            title = _validate_optional_string(params, "title", MAX_TITLE_LENGTH)
+            notes = _validate_optional_string(params, "notes", MAX_NOTES_LENGTH)
             return _jsonrpc_result(
                 req_id=req_id,
                 result=_handle_play_acts_update(db, act_id=act_id, title=title, notes=notes),
@@ -806,20 +845,11 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
         if method == "play/kb/write_preview":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            act_id = params.get("act_id")
-            scene_id = params.get("scene_id")
-            beat_id = params.get("beat_id")
-            path = params.get("path")
-            text = params.get("text")
-            if not isinstance(act_id, str) or not act_id:
-                raise RpcError(code=-32602, message="act_id is required")
-            if not isinstance(path, str) or not path:
-                raise RpcError(code=-32602, message="path is required")
-            if not isinstance(text, str):
-                raise RpcError(code=-32602, message="text is required")
-            for k, v in {"scene_id": scene_id, "beat_id": beat_id}.items():
-                if v is not None and not isinstance(v, str):
-                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
+            act_id = _validate_required_string(params, "act_id", MAX_ID_LENGTH)
+            scene_id = _validate_optional_string(params, "scene_id", MAX_ID_LENGTH)
+            beat_id = _validate_optional_string(params, "beat_id", MAX_ID_LENGTH)
+            path = _validate_required_string(params, "path", MAX_PATH_LENGTH)
+            text = _validate_required_string(params, "text", MAX_TEXT_LENGTH, allow_empty=True)
             return _jsonrpc_result(
                 req_id=req_id,
                 result=_handle_play_kb_write_preview(
@@ -835,23 +865,12 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
         if method == "play/kb/write_apply":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
-            act_id = params.get("act_id")
-            scene_id = params.get("scene_id")
-            beat_id = params.get("beat_id")
-            path = params.get("path")
-            text = params.get("text")
-            expected_sha256_current = params.get("expected_sha256_current")
-            if not isinstance(act_id, str) or not act_id:
-                raise RpcError(code=-32602, message="act_id is required")
-            if not isinstance(path, str) or not path:
-                raise RpcError(code=-32602, message="path is required")
-            if not isinstance(text, str):
-                raise RpcError(code=-32602, message="text is required")
-            for k, v in {"scene_id": scene_id, "beat_id": beat_id}.items():
-                if v is not None and not isinstance(v, str):
-                    raise RpcError(code=-32602, message=f"{k} must be a string or null")
-            if not isinstance(expected_sha256_current, str) or not expected_sha256_current:
-                raise RpcError(code=-32602, message="expected_sha256_current is required")
+            act_id = _validate_required_string(params, "act_id", MAX_ID_LENGTH)
+            scene_id = _validate_optional_string(params, "scene_id", MAX_ID_LENGTH)
+            beat_id = _validate_optional_string(params, "beat_id", MAX_ID_LENGTH)
+            path = _validate_required_string(params, "path", MAX_PATH_LENGTH)
+            text = _validate_required_string(params, "text", MAX_TEXT_LENGTH, allow_empty=True)
+            expected_sha256_current = _validate_required_string(params, "expected_sha256_current", MAX_ID_LENGTH)
             return _jsonrpc_result(
                 req_id=req_id,
                 result=_handle_play_kb_write_apply(

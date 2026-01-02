@@ -45,7 +45,7 @@ def test_poll_commits_and_review_creates_event(
     target = repo_path / "src" / "reos" / "example.py"
     _write(target, "print('hello')\n")
 
-    from tests.conftest import run_git  # type: ignore
+    from conftest import run_git  # type: ignore[import-not-found]
 
     run_git(repo_path, ["add", str(target.relative_to(repo_path))])
     run_git(repo_path, ["commit", "-m", "Add hello"])

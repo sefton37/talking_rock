@@ -366,3 +366,76 @@ class TestErrorHandling:
         resp = _handle_jsonrpc_request(db, req)
         assert "error" in resp
         assert resp["error"]["code"] == -32602
+
+
+class TestInputValidation:
+    """Tests for input validation to prevent resource exhaustion."""
+
+    def test_title_length_validation(self, rpc_context: tuple) -> None:
+        """Title exceeding MAX_TITLE_LENGTH should be rejected."""
+        db, _ = rpc_context
+        long_title = "x" * 600  # Exceeds MAX_TITLE_LENGTH (500)
+        resp = _call_rpc(db, "play/acts/create", {"title": long_title})
+        assert "error" in resp
+        assert resp["error"]["code"] == -32602
+        assert "maximum length" in resp["error"]["message"]
+
+    def test_notes_length_validation(self, rpc_context: tuple) -> None:
+        """Notes exceeding MAX_NOTES_LENGTH should be rejected."""
+        db, _ = rpc_context
+        # Create act first
+        act_resp = _call_rpc(db, "play/acts/create", {"title": "Test Act"})
+        act_id = act_resp["result"]["created_act_id"]
+
+        long_notes = "x" * 60_000  # Exceeds MAX_NOTES_LENGTH (50_000)
+        resp = _call_rpc(
+            db, "play/acts/update", {"act_id": act_id, "notes": long_notes}
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == -32602
+        assert "maximum length" in resp["error"]["message"]
+
+    def test_persona_system_prompt_length_validation(self, rpc_context: tuple) -> None:
+        """Persona system_prompt exceeding MAX_SYSTEM_PROMPT_LENGTH should be rejected."""
+        db, _ = rpc_context
+        long_prompt = "x" * 110_000  # Exceeds MAX_SYSTEM_PROMPT_LENGTH (100_000)
+        persona = {
+            "id": "test-long-prompt",
+            "name": "Test",
+            "system_prompt": long_prompt,
+            "default_context": "",
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "tool_call_limit": 5,
+        }
+        resp = _call_rpc(db, "personas/upsert", {"persona": persona})
+        assert "error" in resp
+        assert resp["error"]["code"] == -32602
+        assert "maximum length" in resp["error"]["message"]
+
+    def test_persona_id_length_validation(self, rpc_context: tuple) -> None:
+        """Persona id exceeding MAX_ID_LENGTH should be rejected."""
+        db, _ = rpc_context
+        long_id = "x" * 250  # Exceeds MAX_ID_LENGTH (200)
+        persona = {
+            "id": long_id,
+            "name": "Test",
+            "system_prompt": "test",
+            "default_context": "",
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "tool_call_limit": 5,
+        }
+        resp = _call_rpc(db, "personas/upsert", {"persona": persona})
+        assert "error" in resp
+        assert resp["error"]["code"] == -32602
+        assert "maximum length" in resp["error"]["message"]
+
+    def test_valid_length_inputs_accepted(self, rpc_context: tuple) -> None:
+        """Inputs within limits should be accepted."""
+        db, _ = rpc_context
+        # Just under limit should work
+        title = "x" * 499  # Under MAX_TITLE_LENGTH (500)
+        resp = _call_rpc(db, "play/acts/create", {"title": title})
+        assert "error" not in resp
+        assert "created_act_id" in resp["result"]

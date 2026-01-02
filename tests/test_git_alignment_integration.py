@@ -36,7 +36,7 @@ def test_analyze_alignment_reports_unmapped_changed_files(
     unmapped.write_text("x = 1\n", encoding="utf-8")
 
     # Ensure it shows up as a change.
-    from tests.conftest import run_git
+    from conftest import run_git  # type: ignore[import-not-found]
 
     run_git(repo, ["add", str(unmapped.relative_to(repo))])
 
