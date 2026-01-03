@@ -25,6 +25,170 @@ import type {
   PlayKbWriteApplyResult
 } from './types';
 
+const REOS_ASCII = `
+██████╗           ██████╗  ███████╗
+██╔══██╗         ██╔═══██╗ ██╔════╝
+██████╔╝  █████╗ ██║   ██║ ███████╗
+██╔══██╗ ██╔══██╗██║   ██║ ╚════██║
+██║  ██║ ███████║██║   ██║      ██║
+██║  ██║ ██╔════╝██║   ██║      ██║
+██║  ██║ ╚█████╗ ╚██████╔╝ ███████║
+╚═╝  ╚═╝  ╚════╝  ╚═════╝  ╚══════╝
+`.trim();
+
+function buildLoginScreen(onLogin: () => void) {
+  const root = document.getElementById('app');
+  if (!root) return;
+
+  root.innerHTML = '';
+
+  const screen = el('div');
+  screen.className = 'login-screen';
+
+  // Top section (above center): ASCII art + tagline
+  const top = el('div');
+  top.className = 'login-top';
+
+  // ASCII Art Title
+  const ascii = el('pre');
+  ascii.className = 'login-ascii';
+  ascii.textContent = REOS_ASCII;
+
+  // Tagline
+  const tagline = el('div');
+  tagline.className = 'login-tagline';
+  tagline.textContent = 'attention is labor';
+
+  top.appendChild(ascii);
+  top.appendChild(tagline);
+
+  // Byline - positioned at exact center of screen
+  const byline = el('div');
+  byline.className = 'login-byline';
+  byline.textContent = 'Talking Rock';
+
+  // Bottom section (below center): Login card
+  const bottom = el('div');
+  bottom.className = 'login-bottom';
+
+  // Login Card
+  const card = el('div');
+  card.className = 'login-card';
+
+  // Username field
+  const usernameField = el('div');
+  usernameField.className = 'login-field';
+  const usernameLabel = el('label');
+  usernameLabel.className = 'login-label';
+  usernameLabel.textContent = 'Username';
+  const usernameInput = el('input') as HTMLInputElement;
+  usernameInput.className = 'login-input';
+  usernameInput.type = 'text';
+  usernameInput.placeholder = 'Enter your username';
+  usernameField.appendChild(usernameLabel);
+  usernameField.appendChild(usernameInput);
+
+  // Password field
+  const passwordField = el('div');
+  passwordField.className = 'login-field';
+  const passwordLabel = el('label');
+  passwordLabel.className = 'login-label';
+  passwordLabel.textContent = 'Password';
+  const passwordInput = el('input') as HTMLInputElement;
+  passwordInput.className = 'login-input';
+  passwordInput.type = 'password';
+  passwordInput.placeholder = 'Enter your password';
+  passwordField.appendChild(passwordLabel);
+  passwordField.appendChild(passwordInput);
+
+  // Login button
+  const loginBtn = el('button');
+  loginBtn.className = 'login-btn';
+  loginBtn.textContent = 'Sign In';
+
+  // Recovery link
+  const recovery = el('a');
+  recovery.className = 'login-recovery';
+  recovery.textContent = 'Forgot your credentials?';
+
+  // Error message area
+  const errorMsg = el('div');
+  errorMsg.className = 'login-error';
+
+  card.appendChild(usernameField);
+  card.appendChild(passwordField);
+  card.appendChild(loginBtn);
+  card.appendChild(recovery);
+  card.appendChild(errorMsg);
+
+  bottom.appendChild(card);
+
+  screen.appendChild(top);
+  screen.appendChild(byline);
+  screen.appendChild(bottom);
+
+  root.appendChild(screen);
+
+  // Handle login with PAM authentication
+  const handleLogin = async () => {
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value;
+
+    if (!username) {
+      errorMsg.textContent = 'Please enter your username';
+      return;
+    }
+    if (!password) {
+      errorMsg.textContent = 'Please enter your password';
+      return;
+    }
+
+    // Disable inputs during authentication
+    loginBtn.textContent = 'Authenticating...';
+    loginBtn.disabled = true;
+    usernameInput.disabled = true;
+    passwordInput.disabled = true;
+    errorMsg.textContent = '';
+
+    try {
+      await invoke('pam_authenticate', { username, password });
+      onLogin();
+    } catch (e) {
+      errorMsg.textContent = 'Invalid credentials';
+      loginBtn.textContent = 'Sign In';
+      loginBtn.disabled = false;
+      usernameInput.disabled = false;
+      passwordInput.disabled = false;
+      passwordInput.value = '';
+      passwordInput.focus();
+    }
+  };
+
+  loginBtn.addEventListener('click', () => void handleLogin());
+  passwordInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') void handleLogin();
+  });
+  usernameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') passwordInput.focus();
+  });
+
+  // Handle recovery
+  recovery.addEventListener('click', () => {
+    errorMsg.textContent = 'Recovery feature coming soon...';
+  });
+
+  // Auto-fill username with current system user and focus appropriately
+  void (async () => {
+    try {
+      const currentUser = await invoke('get_current_user') as string;
+      usernameInput.value = currentUser;
+      passwordInput.focus();
+    } catch {
+      usernameInput.focus();
+    }
+  })();
+}
+
 function buildUi() {
   const query = new URLSearchParams(window.location.search);
   if (query.get('view') === 'me') {
@@ -1021,4 +1185,20 @@ async function buildMeWindow() {
   }
 }
 
-buildUi();
+// Entry point: Show login screen first, then main UI after successful login
+function start() {
+  const query = new URLSearchParams(window.location.search);
+
+  // Secondary windows (like "Me") skip login
+  if (query.get('view')) {
+    buildUi();
+    return;
+  }
+
+  // Show login screen for main window
+  buildLoginScreen(() => {
+    buildUi();
+  });
+}
+
+start();

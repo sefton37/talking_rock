@@ -4,9 +4,11 @@ mod kernel;
 
 use kernel::{KernelError, KernelProcess};
 use serde_json::Value;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-
 use tauri::State;
+use users::{get_current_uid, get_user_by_uid};
 
 struct KernelState(Arc<Mutex<Option<KernelProcess>>>);
 
@@ -42,10 +44,61 @@ async fn kernel_request(state: State<'_, KernelState>, method: String, params: V
     .map_err(|e| format!("kernel_request join error: {e}"))?
 }
 
+/// Get the current system username
+#[tauri::command]
+fn get_current_user() -> Result<String, String> {
+    let uid = get_current_uid();
+    get_user_by_uid(uid)
+        .map(|user| user.name().to_string_lossy().into_owned())
+        .ok_or_else(|| "Could not determine current user".to_string())
+}
+
+/// Authenticate a user against the system (using unix_chkpwd helper)
+#[tauri::command]
+async fn pam_authenticate(username: String, password: String) -> Result<bool, String> {
+    // Run authentication in a blocking thread since it involves process spawning
+    tauri::async_runtime::spawn_blocking(move || {
+        // unix_chkpwd is a setuid helper that verifies passwords against PAM/shadow
+        // It's standard on most Linux distributions
+        let mut child = Command::new("unix_chkpwd")
+            .arg(&username)
+            .arg("nullok")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn auth helper: {}", e))?;
+
+        // Send the password to unix_chkpwd via stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(password.as_bytes())
+                .map_err(|e| format!("Failed to send credentials: {}", e))?;
+        }
+
+        let status = child
+            .wait()
+            .map_err(|e| format!("Auth process failed: {}", e))?;
+
+        if status.success() {
+            Ok(true)
+        } else {
+            Err("Invalid credentials".to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("Auth thread error: {}", e))?
+}
+
 fn main() {
     tauri::Builder::default()
-    .manage(KernelState(Arc::new(Mutex::new(None))))
-        .invoke_handler(tauri::generate_handler![kernel_start, kernel_request])
+        .manage(KernelState(Arc::new(Mutex::new(None))))
+        .invoke_handler(tauri::generate_handler![
+            kernel_start,
+            kernel_request,
+            get_current_user,
+            pam_authenticate
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
