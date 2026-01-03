@@ -1,111 +1,29 @@
-import { invoke } from '@tauri-apps/api/core';
+/**
+ * ReOS Desktop Application - Natural Language Linux
+ *
+ * Main entry point for the Tauri-based desktop UI.
+ * Communicates with the Python kernel via JSON-RPC over stdio.
+ */
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { z } from 'zod';
 
 import './style.css';
 
-const JsonRpcResponseSchema = z.object({
-  jsonrpc: z.literal('2.0'),
-  id: z.union([z.string(), z.number(), z.null()]).optional(),
-  result: z.unknown().optional(),
-  error: z
-    .object({
-      code: z.number(),
-      message: z.string(),
-      data: z.unknown().optional()
-    })
-    .optional()
-});
-
-type ChatRespondResult = {
-  answer: string;
-};
-
-type PlayMeReadResult = {
-  markdown: string;
-};
-
-type PlayActsListResult = {
-  active_act_id: string | null;
-  acts: Array<{ act_id: string; title: string; active: boolean; notes: string }>;
-};
-
-type PlayScenesListResult = {
-  scenes: Array<{
-    scene_id: string;
-    title: string;
-    intent: string;
-    status: string;
-    time_horizon: string;
-    notes: string;
-  }>;
-};
-
-type PlayBeatsListResult = {
-  beats: Array<{ beat_id: string; title: string; status: string; notes: string; link: string | null }>;
-};
-
-type PlayActsCreateResult = {
-  created_act_id: string;
-  acts: Array<{ act_id: string; title: string; active: boolean; notes: string }>;
-};
-
-type PlayScenesMutationResult = {
-  scenes: PlayScenesListResult['scenes'];
-};
-
-type PlayBeatsMutationResult = {
-  beats: PlayBeatsListResult['beats'];
-};
-
-type PlayKbListResult = {
-  files: string[];
-};
-
-type PlayKbReadResult = {
-  path: string;
-  text: string;
-};
-
-type PlayKbWritePreviewResult = {
-  path: string;
-  exists: boolean;
-  sha256_current: string;
-  expected_sha256_current: string;
-  sha256_new: string;
-  diff: string;
-};
-
-type PlayKbWriteApplyResult = {
-  ok: boolean;
-  sha256_current: string;
-};
-
-class KernelError extends Error {
-  code: number;
-
-  constructor(message: string, code: number) {
-    super(message);
-    this.name = 'KernelError';
-    this.code = code;
-  }
-}
-
-
-async function kernelRequest(method: string, params: unknown): Promise<unknown> {
-  const raw = await invoke('kernel_request', { method, params });
-  const parsed = JsonRpcResponseSchema.parse(raw);
-  if (parsed.error) {
-    throw new KernelError(parsed.error.message, parsed.error.code);
-  }
-  return parsed.result;
-}
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-  return node;
-}
+// Modular imports
+import { kernelRequest, KernelError } from './kernel';
+import { el, rowHeader, label, textInput, textArea, smallButton } from './dom';
+import type {
+  ChatRespondResult,
+  SystemInfoResult,
+  PlayMeReadResult,
+  PlayActsListResult,
+  PlayScenesListResult,
+  PlayBeatsListResult,
+  PlayActsCreateResult,
+  PlayKbListResult,
+  PlayKbReadResult,
+  PlayKbWritePreviewResult,
+  PlayKbWriteApplyResult
+} from './types';
 
 function buildUi() {
   const query = new URLSearchParams(window.location.search);
@@ -127,35 +45,113 @@ function buildUi() {
 
   const nav = el('div');
   nav.className = 'nav';
-  nav.style.width = '240px';
+  nav.style.width = '280px';
   nav.style.borderRight = '1px solid #ddd';
   nav.style.padding = '12px';
   nav.style.overflow = 'auto';
 
   const navTitle = el('div');
-  navTitle.textContent = 'ReOS';
+  navTitle.textContent = 'ReOS for Linux';
   navTitle.style.fontWeight = '600';
-  navTitle.style.marginBottom = '10px';
+  navTitle.style.fontSize = '16px';
+  navTitle.style.marginBottom = '12px';
 
+  // System Status Section
+  const systemSection = el('div');
+  systemSection.className = 'system-section';
+
+  const systemHeader = el('div');
+  systemHeader.textContent = 'System Status';
+  systemHeader.style.fontWeight = '600';
+  systemHeader.style.marginBottom = '8px';
+  systemHeader.style.fontSize = '13px';
+  systemHeader.style.color = '#666';
+
+  const systemStatus = el('div');
+  systemStatus.className = 'system-status';
+  systemStatus.style.fontSize = '12px';
+  systemStatus.style.marginBottom = '12px';
+  systemStatus.innerHTML = '<span style="opacity: 0.6">Loading...</span>';
+
+  systemSection.appendChild(systemHeader);
+  systemSection.appendChild(systemStatus);
+
+  // Quick Actions Section
+  const actionsHeader = el('div');
+  actionsHeader.textContent = 'Quick Actions';
+  actionsHeader.style.fontWeight = '600';
+  actionsHeader.style.marginTop = '12px';
+  actionsHeader.style.marginBottom = '8px';
+  actionsHeader.style.fontSize = '13px';
+  actionsHeader.style.color = '#666';
+
+  const quickActions = el('div');
+  quickActions.className = 'quick-actions';
+  quickActions.style.display = 'flex';
+  quickActions.style.flexDirection = 'column';
+  quickActions.style.gap = '4px';
+  quickActions.style.marginBottom = '16px';
+
+  const quickActionItems = [
+    { label: 'System Info', prompt: 'Show me my system information' },
+    { label: 'Disk Usage', prompt: 'How much disk space do I have?' },
+    { label: 'Top Processes', prompt: 'What processes are using the most CPU?' },
+    { label: 'Running Services', prompt: 'Show me the active services' },
+    { label: 'Network Info', prompt: 'Show me my network interfaces and IP addresses' },
+    { label: 'Update System', prompt: 'How do I update my system packages?' },
+  ];
+
+  for (const action of quickActionItems) {
+    const btn = el('button');
+    btn.className = 'quick-action-btn';
+    btn.textContent = action.label;
+    btn.style.textAlign = 'left';
+    btn.style.padding = '8px 10px';
+    btn.style.fontSize = '12px';
+    btn.style.border = '1px solid rgba(209, 213, 219, 0.5)';
+    btn.style.borderRadius = '8px';
+    btn.style.background = 'rgba(255, 255, 255, 0.3)';
+    btn.style.cursor = 'pointer';
+    btn.addEventListener('click', () => {
+      input.value = action.prompt;
+      void onSend();
+    });
+    quickActions.appendChild(btn);
+  }
+
+  // The Play Section
   const meHeader = el('div');
-  meHeader.textContent = 'Me (The Play)';
-  meHeader.style.marginTop = '12px';
+  meHeader.textContent = 'The Play';
+  meHeader.style.marginTop = '16px';
   meHeader.style.fontWeight = '600';
+  meHeader.style.marginBottom = '8px';
+  meHeader.style.fontSize = '13px';
+  meHeader.style.color = '#666';
 
   const meBtn = el('button');
-  meBtn.textContent = 'Me';
+  meBtn.textContent = 'Open Me File';
+  meBtn.style.padding = '8px 10px';
+  meBtn.style.fontSize = '12px';
+  meBtn.style.border = '1px solid rgba(209, 213, 219, 0.5)';
+  meBtn.style.borderRadius = '8px';
+  meBtn.style.background = 'rgba(255, 255, 255, 0.3)';
 
   const actsHeader = el('div');
   actsHeader.textContent = 'Acts';
   actsHeader.style.marginTop = '12px';
   actsHeader.style.fontWeight = '600';
+  actsHeader.style.fontSize = '12px';
 
   const actsList = el('div');
   actsList.style.display = 'flex';
   actsList.style.flexDirection = 'column';
-  actsList.style.gap = '6px';
+  actsList.style.gap = '4px';
+  actsList.style.marginTop = '6px';
 
   nav.appendChild(navTitle);
+  nav.appendChild(systemSection);
+  nav.appendChild(actionsHeader);
+  nav.appendChild(quickActions);
   nav.appendChild(meHeader);
   nav.appendChild(meBtn);
   nav.appendChild(actsHeader);
@@ -183,7 +179,7 @@ function buildUi() {
   const input = el('input');
   input.className = 'chat-input';
   input.type = 'text';
-  input.placeholder = 'Type a message…';
+  input.placeholder = 'Ask me anything about your Linux system…';
   input.style.flex = '1';
 
   const send = el('button');
@@ -294,59 +290,8 @@ function buildUi() {
 
   meBtn.addEventListener('click', () => void openMeWindow());
 
-  function rowHeader(title: string) {
-    const h = el('div');
-    h.textContent = title;
-    h.style.fontWeight = '600';
-    h.style.margin = '10px 0 6px';
-    return h;
-  }
-
-  function label(text: string) {
-    const l = el('div');
-    l.textContent = text;
-    l.style.fontSize = '12px';
-    l.style.opacity = '0.8';
-    l.style.marginBottom = '4px';
-    return l;
-  }
-
-  function textInput(value: string) {
-    const i = el('input') as HTMLInputElement;
-    i.type = 'text';
-    i.value = value;
-    i.style.width = '100%';
-    i.style.boxSizing = 'border-box';
-    i.style.padding = '8px 10px';
-    i.style.border = '1px solid rgba(209, 213, 219, 0.7)';
-    i.style.borderRadius = '10px';
-    i.style.background = 'rgba(255, 255, 255, 0.55)';
-    return i;
-  }
-
-  function textArea(value: string, heightPx = 90) {
-    const t = el('textarea') as HTMLTextAreaElement;
-    t.value = value;
-    t.style.width = '100%';
-    t.style.boxSizing = 'border-box';
-    t.style.padding = '8px 10px';
-    t.style.border = '1px solid rgba(209, 213, 219, 0.7)';
-    t.style.borderRadius = '10px';
-    t.style.background = 'rgba(255, 255, 255, 0.55)';
-    t.style.minHeight = `${heightPx}px`;
-    t.style.resize = 'vertical';
-    return t;
-  }
-
-  function smallButton(text: string) {
-    const b = el('button') as HTMLButtonElement;
-    b.textContent = text;
-    b.style.padding = '8px 10px';
-    b.style.border = '1px solid rgba(209, 213, 219, 0.65)';
-    b.style.borderRadius = '10px';
-    b.style.background = 'rgba(255, 255, 255, 0.35)';
-    return b;
-  }
+  // Helper functions (rowHeader, label, textInput, textArea, smallButton)
+  // are now imported from ./dom.ts
 
   async function refreshBeats(actId: string, sceneId: string) {
     const res = (await kernelRequest('play/beats/list', { act_id: actId, scene_id: sceneId })) as PlayBeatsListResult;
@@ -683,6 +628,7 @@ function buildUi() {
         void (async () => {
           const title = newTitle.value.trim();
           if (!title) return;
+          if (!activeActId || !selectedSceneId) return;
           await kernelRequest('play/beats/create', {
             act_id: activeActId,
             scene_id: selectedSceneId,
@@ -857,7 +803,7 @@ function buildUi() {
     sceneCreateBtn.addEventListener('click', () => {
       void (async () => {
         const title = sceneCreateTitle.value.trim();
-        if (!title) return;
+        if (!title || !activeActId) return;
         await kernelRequest('play/scenes/create', { act_id: activeActId, title });
         await refreshScenes(activeActId);
         renderPlayInspector();
@@ -951,11 +897,92 @@ function buildUi() {
     if (e.key === 'Enter') void onSend();
   });
 
+  // Load system status
+  async function refreshSystemStatus() {
+    try {
+      const result = await kernelRequest('tools/call', {
+        name: 'linux_system_info',
+        arguments: {}
+      }) as { result: SystemInfoResult };
+
+      const info = result.result ?? result as unknown as SystemInfoResult;
+
+      const memPercent = info.memory_percent ?? 0;
+      const diskPercent = info.disk_percent ?? 0;
+      const loadAvg = info.load_avg ?? [0, 0, 0];
+
+      systemStatus.innerHTML = `
+        <div style="margin-bottom: 6px"><strong>${info.hostname ?? 'Unknown'}</strong></div>
+        <div style="opacity: 0.8; margin-bottom: 4px">${info.distro ?? 'Linux'}</div>
+        <div style="margin-bottom: 4px">Kernel: ${info.kernel ?? 'N/A'}</div>
+        <div style="margin-bottom: 4px">Uptime: ${info.uptime ?? 'N/A'}</div>
+        <div style="margin-bottom: 6px">
+          <div style="display: flex; justify-content: space-between;">
+            <span>Memory</span>
+            <span>${memPercent.toFixed(0)}%</span>
+          </div>
+          <div style="height: 4px; background: #e5e7eb; border-radius: 2px; overflow: hidden;">
+            <div style="height: 100%; width: ${memPercent}%; background: ${memPercent > 80 ? '#ef4444' : memPercent > 60 ? '#f59e0b' : '#22c55e'}"></div>
+          </div>
+        </div>
+        <div style="margin-bottom: 6px">
+          <div style="display: flex; justify-content: space-between;">
+            <span>Disk (/)</span>
+            <span>${diskPercent.toFixed(0)}%</span>
+          </div>
+          <div style="height: 4px; background: #e5e7eb; border-radius: 2px; overflow: hidden;">
+            <div style="height: 100%; width: ${diskPercent}%; background: ${diskPercent > 90 ? '#ef4444' : diskPercent > 75 ? '#f59e0b' : '#22c55e'}"></div>
+          </div>
+        </div>
+        <div style="opacity: 0.8">Load: ${loadAvg[0].toFixed(2)} ${loadAvg[1].toFixed(2)} ${loadAvg[2].toFixed(2)}</div>
+      `;
+    } catch (e) {
+      systemStatus.innerHTML = `<span style="opacity: 0.6">Could not load system info</span>`;
+    }
+  }
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    // Ctrl+K or Cmd+K to focus input
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      input.focus();
+      input.select();
+    }
+
+    // Ctrl+L to clear chat
+    if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+      e.preventDefault();
+      chatLog.innerHTML = '';
+      append('reos', 'Chat cleared. How can I help you with your Linux system?');
+    }
+
+    // Ctrl+R to refresh system status
+    if ((e.ctrlKey || e.metaKey) && e.key === 'r' && !e.shiftKey) {
+      e.preventDefault();
+      void refreshSystemStatus();
+    }
+
+    // Escape to clear input
+    if (e.key === 'Escape' && document.activeElement === input) {
+      input.value = '';
+      input.blur();
+    }
+  });
+
   // Initial load
   void (async () => {
     try {
+      // Load system status
+      await refreshSystemStatus();
+      // Refresh system status every 30 seconds
+      setInterval(() => void refreshSystemStatus(), 30000);
+
       await refreshActs();
       if (activeActId) await refreshScenes(activeActId);
+
+      // Welcome message
+      append('reos', 'Welcome to ReOS! I\'m your Linux assistant. Ask me anything about your system, or use the quick actions on the left. Keyboard shortcuts: Ctrl+K to focus, Ctrl+L to clear, Ctrl+R to refresh status.');
     } catch (e) {
       showJsonInInspector('Startup error', { error: String(e) });
     }

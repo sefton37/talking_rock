@@ -20,6 +20,7 @@ venv/
 .venv/
 .env
 .env.*
+uv.lock
 
 # ReOS local data
 .reos-data/

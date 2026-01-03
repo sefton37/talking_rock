@@ -1,0 +1,52 @@
+# ReOS Reasoning System Configuration
+# Copy this file to ~/.config/reos/settings.toml and customize
+
+[reasoning]
+# Enable the extended reasoning system
+enabled = true
+
+# Automatically assess request complexity (simple vs complex)
+auto_assess = true
+
+# Always show plan and ask for confirmation, even for simple requests
+always_confirm = false
+
+# Show detailed explanations of what each step does
+explain_steps = true
+
+
+[safety]
+# Always ask before permanent/destructive operations (rm, format, etc.)
+require_approval_for_permanent = true
+
+# Automatically backup config files before modifying them
+auto_backup_configs = true
+
+# Verify each step succeeded before moving to the next
+verify_each_step = true
+
+# Automatically rollback if a step fails critically
+rollback_on_failure = true
+
+
+[conversation]
+# How detailed should responses be?
+# Options: "minimal", "normal", "detailed"
+verbosity = "normal"
+
+# Show the actual commands being run
+show_commands = true
+
+# Use friendly/casual tone vs technical/formal
+friendly_tone = true
+
+
+[learning]
+# Store successful operation patterns for faster future execution
+cache_successful_plans = true
+
+# Learn from user preferences (verbosity, approval patterns)
+adapt_to_user = true
+
+# Path to knowledge database (default: ~/.config/reos/knowledge.db)
+# knowledge_db = "~/.config/reos/knowledge.db"
