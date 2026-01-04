@@ -254,9 +254,17 @@ Return the step-by-step plan as JSON:"""
 
             steps_data = json.loads(response)
 
-            # Handle case where LLM wraps in an object
-            if isinstance(steps_data, dict) and "steps" in steps_data:
-                steps_data = steps_data["steps"]
+            # Handle various ways LLM might wrap the steps
+            if isinstance(steps_data, dict):
+                # Try common wrapper keys
+                for key in ("steps", "plan", "actions", "tasks"):
+                    if key in steps_data and isinstance(steps_data[key], list):
+                        steps_data = steps_data[key]
+                        break
+                else:
+                    # If dict has no known list key, log and return empty
+                    logger.warning("LLM returned dict without steps list: keys=%s", list(steps_data.keys()))
+                    return []
 
             if not isinstance(steps_data, list):
                 logger.warning("LLM returned non-list plan: %s", type(steps_data))

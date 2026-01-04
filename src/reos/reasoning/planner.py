@@ -585,9 +585,15 @@ class TaskPlanner:
         return "sudo apt"  # Default fallback
 
     def _parse_llm_steps(self, llm_steps: list[dict]) -> list[TaskStep]:
-        """Parse steps from LLM response."""
+        """Parse steps from LLM response.
+
+        Handles action format conversion:
+        - If action has 'tool: linux_run_command' with args.command, extract as COMMAND type
+        - Other tools become TOOL_CALL type
+        """
         steps = []
         for i, step_data in enumerate(llm_steps):
+            # Determine step type based on explicit type or action structure
             step_type = StepType.COMMAND
             if step_data.get("type") == "verify":
                 step_type = StepType.VERIFICATION
@@ -596,12 +602,36 @@ class TaskPlanner:
             elif step_data.get("type") == "prompt":
                 step_type = StepType.USER_PROMPT
 
+            # Convert action format to match executor expectations
+            raw_action = step_data.get("action", {})
+            action: dict[str, Any] = {}
+
+            # Handle LLM-generated tool actions
+            if isinstance(raw_action, dict) and "tool" in raw_action:
+                tool_name = raw_action.get("tool", "")
+                tool_args = raw_action.get("args", {})
+
+                if tool_name == "linux_run_command" and "command" in tool_args:
+                    # Extract command for direct execution
+                    action = {"command": tool_args["command"]}
+                    step_type = StepType.COMMAND
+                else:
+                    # Use as tool call
+                    action = {"tool": tool_name, "args": tool_args}
+                    step_type = StepType.TOOL_CALL
+            elif isinstance(raw_action, dict) and "command" in raw_action:
+                # Already in correct format
+                action = raw_action
+                step_type = StepType.COMMAND
+            else:
+                action = raw_action
+
             step = TaskStep(
                 id=step_data.get("id", f"llm_step_{i}"),
                 title=step_data.get("title", f"Step {i + 1}"),
                 description=step_data.get("description", ""),
                 step_type=step_type,
-                action=step_data.get("action", {}),
+                action=action,
                 depends_on=step_data.get("depends_on", []),
                 rollback_command=step_data.get("rollback"),
                 explanation=step_data.get("explanation", ""),
