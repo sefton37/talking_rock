@@ -24,6 +24,19 @@ from typing import Any
 from .agent import ChatAgent
 from .db import Database, get_db
 from .mcp_tools import ToolError, call_tool, list_tools
+from .security import (
+    ValidationError,
+    validate_service_name,
+    validate_container_id,
+    escape_shell_arg,
+    is_command_safe,
+    check_rate_limit,
+    RateLimitExceeded,
+    audit_log,
+    AuditEventType,
+    get_auditor,
+    configure_auditor,
+)
 from .play_fs import create_act as play_create_act
 from .play_fs import create_beat as play_create_beat
 from .play_fs import create_scene as play_create_scene
@@ -306,17 +319,69 @@ def _handle_approval_respond(
     if approval.get("status") != "pending":
         raise RpcError(code=-32602, message="Approval already resolved")
 
+    # SECURITY: Rate limit approval actions
+    try:
+        check_rate_limit("approval")
+    except RateLimitExceeded as e:
+        audit_log(AuditEventType.RATE_LIMIT_EXCEEDED, {"category": "approval", "action": action})
+        raise RpcError(code=-32429, message=str(e))
+
     if action == "reject":
         db.resolve_approval(approval_id=approval_id, status="rejected")
+        audit_log(AuditEventType.APPROVAL_DENIED, {
+            "approval_id": approval_id,
+            "original_command": approval.get("command"),
+        })
         return {"status": "rejected", "result": None}
 
     if action == "approve":
-        command = edited_command if edited_command else str(approval.get("command"))
+        original_command = str(approval.get("command"))
+        command = edited_command if edited_command else original_command
+        was_edited = edited_command is not None and edited_command != original_command
+
+        # SECURITY: Re-validate command if it was edited
+        if was_edited:
+            audit_log(AuditEventType.APPROVAL_EDITED, {
+                "approval_id": approval_id,
+                "original_command": original_command[:200],
+                "edited_command": command[:200],
+            })
+
+            # Check if edited command is safe
+            safe, warning = is_command_safe(command)
+            if not safe:
+                audit_log(AuditEventType.COMMAND_BLOCKED, {
+                    "approval_id": approval_id,
+                    "command": command[:200],
+                    "reason": warning,
+                })
+                raise RpcError(
+                    code=-32602,
+                    message=f"Edited command blocked: {warning}. Cannot bypass safety checks by editing.",
+                )
+
+        # SECURITY: Rate limit sudo commands
+        if "sudo " in command:
+            try:
+                check_rate_limit("sudo")
+            except RateLimitExceeded as e:
+                audit_log(AuditEventType.RATE_LIMIT_EXCEEDED, {"category": "sudo"})
+                raise RpcError(code=-32429, message=str(e))
 
         # Execute the command
         try:
             result = execute_command(command)
             db.resolve_approval(approval_id=approval_id, status="approved")
+
+            # SECURITY: Log command execution
+            get_auditor().log_command_execution(
+                command=command,
+                success=result.returncode == 0,
+                return_code=result.returncode,
+                approval_id=approval_id,
+                edited=was_edited,
+            )
+
             return {
                 "status": "executed",
                 "result": {
@@ -329,6 +394,11 @@ def _handle_approval_respond(
             }
         except Exception as exc:
             db.resolve_approval(approval_id=approval_id, status="approved")
+            audit_log(AuditEventType.COMMAND_EXECUTED, {
+                "approval_id": approval_id,
+                "command": command[:200],
+                "error": str(exc),
+            }, success=False)
             return {
                 "status": "error",
                 "result": {"error": str(exc), "command": command},
@@ -712,14 +782,36 @@ def _handle_service_action(
     """Perform an action on a systemd service."""
     from . import linux_tools
 
+    # SECURITY: Validate service name to prevent command injection
+    try:
+        name = validate_service_name(name)
+    except ValidationError as e:
+        audit_log(AuditEventType.VALIDATION_FAILED, {"field": "name", "value": name[:50], "error": e.message})
+        raise RpcError(code=-32602, message=e.message)
+
     valid_actions = {"start", "stop", "restart", "status", "logs"}
     if action not in valid_actions:
         raise RpcError(code=-32602, message=f"Invalid action: {action}. Must be one of: {', '.join(valid_actions)}")
 
+    # SECURITY: Rate limit service operations
+    try:
+        check_rate_limit("service")
+    except RateLimitExceeded as e:
+        audit_log(AuditEventType.RATE_LIMIT_EXCEEDED, {"category": "service", "action": action})
+        raise RpcError(code=-32429, message=str(e))
+
+    # SECURITY: Escape service name for shell (defense in depth)
+    safe_name = escape_shell_arg(name)
+
     # For logs, return recent journal entries
     if action == "logs":
         try:
-            result = linux_tools.execute_command(f"journalctl -u {name} -n 50 --no-pager")
+            result = linux_tools.execute_command(f"journalctl -u {safe_name} -n 50 --no-pager")
+            audit_log(AuditEventType.COMMAND_EXECUTED, {
+                "command": f"journalctl -u {name}",
+                "action": action,
+                "return_code": result.returncode,
+            }, success=result.returncode == 0)
             return {
                 "ok": result.returncode == 0,
                 "logs": result.stdout if result.stdout else result.stderr,
@@ -730,7 +822,7 @@ def _handle_service_action(
     # For status, just check the service
     if action == "status":
         try:
-            result = linux_tools.execute_command(f"systemctl status {name} --no-pager")
+            result = linux_tools.execute_command(f"systemctl status {safe_name} --no-pager")
             return {
                 "ok": True,
                 "status": result.stdout if result.stdout else result.stderr,
@@ -742,7 +834,7 @@ def _handle_service_action(
     # For start/stop/restart, create an approval request
     import uuid
     approval_id = uuid.uuid4().hex[:12]
-    command = f"sudo systemctl {action} {name}"
+    command = f"sudo systemctl {action} {safe_name}"
 
     db.create_approval(
         approval_id=approval_id,
@@ -751,6 +843,13 @@ def _handle_service_action(
         explanation=f"{action.capitalize()} the {name} service",
         risk_level="medium",
     )
+
+    audit_log(AuditEventType.APPROVAL_REQUESTED, {
+        "approval_id": approval_id,
+        "command": command,
+        "service": name,
+        "action": action,
+    })
 
     return {
         "requires_approval": True,
@@ -769,14 +868,36 @@ def _handle_container_action(
     """Perform an action on a Docker container."""
     from . import linux_tools
 
+    # SECURITY: Validate container ID to prevent command injection
+    try:
+        container_id = validate_container_id(container_id)
+    except ValidationError as e:
+        audit_log(AuditEventType.VALIDATION_FAILED, {"field": "container_id", "value": container_id[:50], "error": e.message})
+        raise RpcError(code=-32602, message=e.message)
+
     valid_actions = {"start", "stop", "restart", "logs"}
     if action not in valid_actions:
         raise RpcError(code=-32602, message=f"Invalid action: {action}. Must be one of: {', '.join(valid_actions)}")
 
+    # SECURITY: Rate limit container operations
+    try:
+        check_rate_limit("container")
+    except RateLimitExceeded as e:
+        audit_log(AuditEventType.RATE_LIMIT_EXCEEDED, {"category": "container", "action": action})
+        raise RpcError(code=-32429, message=str(e))
+
+    # SECURITY: Escape container ID for shell (defense in depth)
+    safe_id = escape_shell_arg(container_id)
+
     # For logs, return recent container logs
     if action == "logs":
         try:
-            result = linux_tools.execute_command(f"docker logs --tail 50 {container_id}")
+            result = linux_tools.execute_command(f"docker logs --tail 50 {safe_id}")
+            audit_log(AuditEventType.COMMAND_EXECUTED, {
+                "command": f"docker logs {container_id}",
+                "action": action,
+                "return_code": result.returncode,
+            }, success=result.returncode == 0)
             return {
                 "ok": result.returncode == 0,
                 "logs": result.stdout if result.stdout else result.stderr,
@@ -786,7 +907,12 @@ def _handle_container_action(
 
     # For start/stop/restart
     try:
-        result = linux_tools.execute_command(f"docker {action} {container_id}")
+        result = linux_tools.execute_command(f"docker {action} {safe_id}")
+        audit_log(AuditEventType.COMMAND_EXECUTED, {
+            "command": f"docker {action} {container_id}",
+            "action": action,
+            "return_code": result.returncode,
+        }, success=result.returncode == 0)
         return {
             "ok": result.returncode == 0,
             "message": result.stdout if result.stdout else f"Container {action} completed",

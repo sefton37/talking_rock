@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .security import is_command_dangerous as security_is_command_dangerous, audit_log, AuditEventType
+
 logger = logging.getLogger(__name__)
 
 # Dangerous commands that should never be executed (exact patterns)
@@ -177,16 +179,30 @@ def detect_distro() -> str:
 def is_command_safe(command: str) -> tuple[bool, str | None]:
     """Check if a command is safe to execute.
 
+    Uses the security module's comprehensive pattern matching plus local patterns.
     Returns (is_safe, warning_message).
     """
     cmd_stripped = command.strip()
 
-    # Check for obviously dangerous commands using regex patterns
+    # SECURITY: Use the more comprehensive security module patterns first
+    is_dangerous, reason = security_is_command_dangerous(command)
+    if is_dangerous:
+        audit_log(AuditEventType.COMMAND_BLOCKED, {
+            "command": command[:200],
+            "reason": reason,
+        })
+        return False, f"Blocked dangerous command: {reason}"
+
+    # Legacy check: local dangerous command patterns
     for pattern in DANGEROUS_COMMAND_PATTERNS:
         if re.search(pattern, cmd_stripped, re.IGNORECASE):
+            audit_log(AuditEventType.COMMAND_BLOCKED, {
+                "command": command[:200],
+                "reason": f"Pattern: {pattern}",
+            })
             return False, f"Blocked dangerous command matching pattern: {pattern}"
 
-    # Check for risky patterns that need confirmation
+    # Check for risky patterns that need confirmation (warning only, still allowed)
     for pattern in RISKY_PATTERNS:
         if re.search(pattern, command, re.IGNORECASE):
             return True, "This command matches a risky pattern and could cause data loss"

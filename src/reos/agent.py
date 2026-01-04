@@ -17,6 +17,7 @@ from .reasoning import ReasoningEngine, ReasoningConfig, ComplexityLevel, TaskPl
 from .system_index import get_or_refresh_context as get_system_context
 from .system_state import SteadyStateCollector
 from .certainty import CertaintyWrapper, create_certainty_prompt_addition
+from .security import detect_prompt_injection, audit_log, AuditEventType
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,26 @@ class ChatAgent:
         Returns:
             ChatResponse with answer and metadata
         """
+        # SECURITY: Check for prompt injection attempts
+        injection_check = detect_prompt_injection(user_text)
+        if injection_check.is_suspicious:
+            audit_log(
+                AuditEventType.INJECTION_DETECTED,
+                {
+                    "patterns": injection_check.detected_patterns,
+                    "confidence": injection_check.confidence,
+                    "input_preview": user_text[:100],
+                },
+            )
+            # Log warning but don't block - just sanitize and add extra caution
+            logger.warning(
+                "Potential prompt injection detected (confidence=%.2f): %s",
+                injection_check.confidence,
+                injection_check.detected_patterns,
+            )
+            # Use sanitized input for processing
+            user_text = injection_check.sanitized_input
+
         # Get or create conversation
         if conversation_id is None:
             conversation_id = _generate_id()
