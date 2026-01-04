@@ -226,20 +226,33 @@ Risk levels:
 IMPORTANT: Always return a JSON ARRAY [], never a single object {}."""
 
         # Build description of what we're trying to do
+        # Use MATCHED resources only, not the original targets (which may be fuzzy)
         matched_desc = self._format_matched_resources(matched_resources)
+
+        # Get the actual list of resources to operate on
+        if intent.resource_type == "container":
+            actual_targets = matched_resources.get("containers", [])
+        elif intent.resource_type == "service":
+            actual_targets = matched_resources.get("services", [])
+        elif intent.resource_type == "package":
+            actual_targets = matched_resources.get("packages", intent.targets)
+        else:
+            actual_targets = intent.targets
+
+        logger.info("Plan generation: action=%s, matched_targets=%s", intent.action, actual_targets)
 
         user_prompt = f"""Generate a plan for this intent:
 
 Action: {intent.action}
 Resource type: {intent.resource_type}
-Targets: {intent.targets}
-Conditions: {intent.conditions}
-Explanation: {intent.explanation}
 
-Matched resources from system:
-{matched_desc}
+ACTUAL RESOURCES TO OPERATE ON (use these exact names):
+{actual_targets}
 
-Return the step-by-step plan as JSON:"""
+Create steps for EACH resource listed above.
+For action "{intent.action}", create the appropriate steps for each one.
+
+Return the step-by-step plan as JSON array:"""
 
         try:
             ollama = self._get_ollama()
