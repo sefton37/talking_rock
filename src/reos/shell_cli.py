@@ -11,12 +11,46 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
 from typing import NoReturn
 
 from .agent import ChatAgent, ChatResponse
 from .db import get_db
 from .logging_setup import configure_logging
+
+# File to persist conversation ID between shell invocations
+CONVERSATION_FILE = Path.home() / ".reos_conversation"
+
+
+def get_conversation_id() -> str | None:
+    """Get the current conversation ID from file."""
+    try:
+        if CONVERSATION_FILE.exists():
+            content = CONVERSATION_FILE.read_text().strip()
+            if content:
+                return content
+    except Exception:
+        pass
+    return None
+
+
+def save_conversation_id(conversation_id: str) -> None:
+    """Save conversation ID to file for context continuity."""
+    try:
+        CONVERSATION_FILE.write_text(conversation_id)
+    except Exception:
+        pass  # Best effort
+
+
+def clear_conversation() -> None:
+    """Clear the current conversation to start fresh."""
+    try:
+        if CONVERSATION_FILE.exists():
+            CONVERSATION_FILE.unlink()
+    except Exception:
+        pass
 
 
 def colorize(text: str, color: str) -> str:
@@ -146,12 +180,18 @@ def print_processing_summary(response: ChatResponse, *, quiet: bool = False) -> 
         print(file=sys.stderr)
 
 
-def handle_prompt(prompt: str, *, verbose: bool = False) -> ChatResponse:
+def handle_prompt(
+    prompt: str,
+    *,
+    verbose: bool = False,
+    conversation_id: str | None = None,
+) -> ChatResponse:
     """Process a natural language prompt through ReOS.
 
     Args:
         prompt: The natural language query from the user.
         verbose: If True, show detailed progress.
+        conversation_id: Optional conversation ID to continue.
 
     Returns:
         ChatResponse with answer and metadata.
@@ -163,7 +203,7 @@ def handle_prompt(prompt: str, *, verbose: bool = False) -> ChatResponse:
         print_thinking()
 
     try:
-        response = agent.respond(prompt)
+        response = agent.respond(prompt, conversation_id=conversation_id)
     finally:
         if verbose:
             clear_thinking()
@@ -195,12 +235,21 @@ def main() -> NoReturn:
         help="Show detailed processing information",
     )
     parser.add_argument(
+        "--new", "-n",
+        action="store_true",
+        help="Start a new conversation (clear previous context)",
+    )
+    parser.add_argument(
         "--command-not-found",
         action="store_true",
         help="Mode for command_not_found_handle integration (shows prompt confirmation)",
     )
 
     args = parser.parse_args()
+
+    # Handle --new flag to start fresh conversation
+    if args.new:
+        clear_conversation()
 
     # Join prompt words
     prompt = " ".join(args.prompt).strip()
@@ -230,7 +279,17 @@ def main() -> NoReturn:
         print_header()
 
     try:
-        result = handle_prompt(prompt, verbose=not args.quiet)
+        # Get conversation ID for context continuity
+        conversation_id = get_conversation_id()
+
+        result = handle_prompt(
+            prompt,
+            verbose=not args.quiet,
+            conversation_id=conversation_id,
+        )
+
+        # Save conversation ID for next invocation
+        save_conversation_id(result.conversation_id)
 
         # Show processing summary (tools called, pending approvals, etc.)
         print_processing_summary(result, quiet=args.quiet and not args.verbose)
