@@ -398,6 +398,55 @@ These limits prevent the AI from:
 
 The limits are enforced in code and **cannot be modified by the AI during execution**. Only you can change them in config.
 
+## Fallback Behavior
+
+The LLM planner is the primary intent parser, but ReOS gracefully falls back when needed:
+
+### Fallback Chain
+
+```
+User Request
+     │
+     ▼
+┌────────────────────┐
+│   LLM Planner      │──── Success? ────► Use LLM plan
+└────────────────────┘
+     │ Fail/Empty
+     ▼
+┌────────────────────┐
+│ Template Matching  │──── Match? ────► Use template plan
+└────────────────────┘
+     │ No match
+     ▼
+┌────────────────────┐
+│  Regex Intent      │──── Parsed? ────► Generate steps
+│  Parsing           │
+└────────────────────┘
+     │ No match
+     ▼
+┌────────────────────┐
+│ Return empty plan  │──── Normal agent handles request
+└────────────────────┘
+```
+
+### When Fallback Occurs
+
+| Scenario | Behavior |
+|----------|----------|
+| LLM returns empty/no steps | Falls back to templates, then regex |
+| LLM unavailable (no callback) | Uses templates and regex directly |
+| LLM times out or errors | Treated as empty response, falls back |
+| Query intent detected | Returns empty plan, normal agent answers |
+
+### Transparency
+
+Fallback is logged but doesn't surface to users unless debug logging is enabled:
+- `DEBUG: LLM planner returned no steps, falling back`
+- `DEBUG: Using template-based plan`
+- `DEBUG: Using regex fallback plan`
+
+This ensures a seamless experience - users get an answer either way, whether from the LLM planner or fallback mechanisms.
+
 ## Limitations
 
 - Planning uses heuristics and may misclassify edge cases

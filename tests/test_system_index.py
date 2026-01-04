@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -386,15 +386,13 @@ class TestAgentIntegration:
 
         db = get_db()
 
-        # Mock the system context
-        mock_context = "=== SYSTEM STATE ===\nHostname: testhost\n=== END ==="
+        agent = ChatAgent(db=db)
+        context = agent._get_system_context()
 
-        with patch("reos.agent.get_system_context", return_value=mock_context):
-            agent = ChatAgent(db=db)
-            context = agent._get_system_context()
-
+        # Should include system state from SteadyStateCollector
         assert "SYSTEM STATE" in context
-        assert "testhost" in context
+        # Should include certainty rules
+        assert "CERTAINTY RULES" in context
 
     def test_agent_handles_missing_context(
         self,
@@ -405,10 +403,13 @@ class TestAgentIntegration:
         from reos.db import get_db
 
         db = get_db()
+        agent = ChatAgent(db=db)
 
-        # Mock the system context to raise an exception
-        with patch("reos.agent.get_system_context", side_effect=Exception("Test error")):
-            agent = ChatAgent(db=db)
+        # Mock the steady state collector to raise an exception
+        agent._steady_state.refresh_if_stale = Mock(side_effect=Exception("Test error"))
+
+        # Also mock fallback to ensure we test the full error path
+        with patch("reos.agent.get_system_context", side_effect=Exception("Fallback error")):
             context = agent._get_system_context()
 
         # Should return empty string, not crash

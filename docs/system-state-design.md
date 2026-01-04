@@ -208,31 +208,32 @@ CRITICAL RULES FOR RESPONSES:
 
 ### Post-Processing Validation
 
-After LLM response, validate claims:
+After LLM response, wrap with certainty tracking:
 
 ```python
-def validate_response(response: str, steady_state: SteadyState, tool_outputs: list) -> CertainResponse:
-    """Post-process LLM response to validate claims."""
+def wrap_response(
+    response: str,
+    system_state: SteadyState | None,
+    tool_outputs: list,
+    user_input: str
+) -> CertainResponse:
+    """Wrap LLM response with certainty tracking."""
 
     # Extract factual claims from response
-    claims = extract_claims(response)
+    claims = self._extract_claims(response)
 
     facts = []
     uncertainties = []
 
     for claim in claims:
-        evidence = find_evidence(claim, steady_state, tool_outputs)
-        if evidence:
-            facts.append(Fact(
-                claim=claim,
-                evidence_type=evidence.type,
-                evidence_source=evidence.source,
-                evidence_value=evidence.value
-            ))
+        evidence = self._find_evidence(claim, system_state, tool_outputs, user_input)
+        if evidence and evidence.evidence_type != EvidenceType.NONE:
+            facts.append(Fact(claim=claim, evidence=evidence, verified=True))
         else:
             uncertainties.append(Uncertainty(
                 claim=claim,
-                reason="no_evidence",
+                reason=UncertaintyReason.NO_DATA,
+                suggestion=self._suggest_verification(claim),
                 confidence=0.3
             ))
 
@@ -240,53 +241,55 @@ def validate_response(response: str, steady_state: SteadyState, tool_outputs: li
         answer=response,
         facts=facts,
         uncertainties=uncertainties,
-        confidence=calculate_confidence(facts, uncertainties)
+        overall_confidence=self._calculate_confidence(facts, uncertainties)
     )
 ```
 
 ## 4. Integration Points
 
-### ChatAgent Changes
+### ChatAgent Changes (Actual Implementation)
 
 ```python
 class ChatAgent:
     def __init__(self, ...):
-        self.steady_state = SteadyStateCollector()
-        self.certainty = CertaintyWrapper()
+        self._steady_state = SteadyStateCollector()
+        self._certainty = CertaintyWrapper()
+        self._recent_tool_outputs: list[dict] = []
 
     def respond(self, message: str) -> ChatResponse:
-        # Include steady state in context
-        context = self.steady_state.get_context()
+        # Include steady state + certainty rules in context
+        system_context = self._get_system_context()  # Calls create_certainty_prompt_addition()
 
-        # Get LLM response
-        raw_response = self._llm_call(message, context)
+        # ... execute tools, get LLM response ...
 
         # Validate certainty
-        certain_response = self.certainty.validate(
-            raw_response,
-            self.steady_state.current,
-            self.recent_tool_outputs
+        certain_response = self._certainty.wrap_response(
+            response=answer,
+            system_state=self._steady_state.current,
+            tool_outputs=tool_results,
+            user_input=user_text,
         )
 
         return ChatResponse(
-            answer=certain_response.answer,
-            confidence=certain_response.confidence,
-            uncertainties=certain_response.uncertainties
+            answer=answer,
+            confidence=certain_response.overall_confidence,
+            evidence_summary=certain_response.evidence_summary,
+            has_uncertainties=certain_response.has_uncertainties(),
         )
 ```
 
-### ReasoningEngine Changes
+### ReasoningEngine Integration
 
-```python
-class ReasoningEngine:
-    def process(self, request: str):
-        # Validate intent against system state
-        if not self._can_verify_targets(intent, self.steady_state):
-            return ProcessingResult(
-                response="I need to verify what's on your system first",
-                needs_verification=True
-            )
-```
+The ReasoningEngine receives system context (containers, services, packages) from ChatAgent
+via `_get_system_snapshot_for_reasoning()`. This provides:
+- `container_names`: List of actual container names for matching
+- `service_names`: List of actual service names
+- `installed_packages`: List of installed packages
+
+The LLMPlanner uses this context to match user references ("nextcloud containers")
+against actual system resources, preventing hallucination of non-existent targets.
+
+**Note:** Target validation happens in `LLMPlanner._match_targets()`, not in ReasoningEngine directly.
 
 ## 5. Implementation Plan
 

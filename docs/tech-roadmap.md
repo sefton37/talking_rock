@@ -229,41 +229,44 @@ ReOS: Analyzing disk usage...
 - [x] Basic MCP server (JSON-RPC stdio)
 - [x] Safety infrastructure (command blocking, risk assessment)
 
-### M1: Desktop App Shell (✓ 80% Complete)
+### M1: Desktop App Shell (✓ Complete)
 - [x] Tauri app with 3-pane layout
 - [x] Chat interface via RPC (ui_rpc_server.py)
 - [x] System status display (basic)
 - [x] Extended reasoning system (planning, execution, recovery)
 - [x] Circuit breakers (SafetyLimits enforcement)
-- [ ] Inspector pane (reasoning trail visualization) **← In Progress**
-- [ ] Command preview UI (approve/reject) **← In Progress**
+- [ ] Inspector pane (reasoning trail visualization) **← Future**
+- [ ] Command preview UI (approve/reject) **← Future (CLI works)**
 
-### M2: Conversational Flows (Next Priority)
+### M2: Conversational Flows (✓ Complete - Backend)
 **Goal: Complete end-to-end user journeys for common tasks**
 
-#### M2.1: Command Preview & Approval
-- [ ] UI component: Command preview box (show command, explanation, undo)
-- [ ] Approval workflow: [Approve] [Reject] [Edit] [Explain More]
-- [ ] Live output streaming during execution
-- [ ] Post-execution summary (what changed, how to undo)
+#### M2.1: Command Preview & Approval (✓ Backend Complete)
+- [x] Backend: Plan generation with step preview
+- [x] Backend: Approval workflow (approve/reject via chat)
+- [x] Backend: Live output streaming during execution
+- [x] CLI: Shell integration for natural language input
+- [ ] UI: Command preview component **← Future**
 
-#### M2.2: System State Dashboard
-- [ ] Live system metrics (CPU, RAM, disk) in nav panel
-- [ ] Service status indicators (green=running, red=failed, gray=inactive)
-- [ ] Container list with quick actions (stop, restart, logs)
-- [ ] Package search with install/remove buttons
+#### M2.2: System State Dashboard (Partial)
+- [x] Backend: System state collection (SteadyStateCollector)
+- [x] Backend: RAG context for LLM (steady state in every prompt)
+- [ ] UI: Live system metrics in nav panel **← Future**
+- [ ] UI: Service/container indicators **← Future**
 
-#### M2.3: Multi-Step Workflows
-- [ ] Progress indicator for multi-step plans (Step 2 of 5...)
-- [ ] Pause/resume execution
-- [ ] Rollback on failure (automatic or user-triggered)
-- [ ] Learning mode: Show command breakdowns after execution
+#### M2.3: Multi-Step Workflows (✓ Complete)
+- [x] LLM-first intent parsing (hybrid approach)
+- [x] Deterministic step generation from intent
+- [x] Plan execution with step-by-step progress
+- [x] Rollback on failure (automatic)
+- [ ] UI: Progress visualization **← Future**
 
-#### M2.4: Conversational Troubleshooting
-- [ ] Context continuity ("it" refers to previous topic)
-- [ ] Follow-up questions ("Which approach?" → "1" → execute)
-- [ ] Error explanation in plain language
-- [ ] Suggested next steps based on system state
+#### M2.4: Conversational Troubleshooting (✓ Backend Complete)
+- [x] Conversation persistence across sessions
+- [x] Intent detection (approval, rejection, choices)
+- [x] Reference resolution (pattern matching for "it", "that")
+- [x] Error explanation in natural language
+- [ ] Deep semantic reference resolution **← Future enhancement**
 
 ### M3: Intelligence & Learning (Later)
 **Goal: Make ReOS smarter about YOUR system and patterns**

@@ -828,8 +828,10 @@ class ChatAgent:
                 "run_command": "linux_run_command",
                 "run": "linux_run_command",
                 "packages": "linux_list_packages",
-                "docker": "linux_list_docker_containers",
-                "containers": "linux_list_docker_containers",
+                "docker": "linux_docker_containers",
+                "containers": "linux_docker_containers",
+                "list_docker_containers": "linux_docker_containers",
+                "docker_containers": "linux_docker_containers",
                 "git_summary": "reos_git_summary",
                 "git": "reos_git_summary",
             }
