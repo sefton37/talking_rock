@@ -161,5 +161,7 @@ export -f _reos_find_root
 
 # Success message on load
 if [[ -n "${BASH_VERSION:-}" ]]; then
-    echo "ReOS shell integration loaded. Type natural language or use 'reos \"query\"'" >&2
+    echo "ReOS shell integration loaded." >&2
+    echo "  Usage: Just type natural language, or use 'reos \"query\"'" >&2
+    echo "  Note: Queries starting with 'if/for/while' need quotes: reos \"if we have...\"" >&2
 fi
