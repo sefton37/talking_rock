@@ -234,9 +234,9 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
 
     const statusText = el('div');
     statusText.innerHTML = ollamaStatus?.reachable
-      ? `<strong style="color: #22c55e;">Connected</strong> - ${ollamaStatus.model_count} models available`
-      : `<strong style="color: #ef4444;">Not Connected</strong> - ${ollamaStatus?.error || 'Unknown error'}`;
-    statusText.style.cssText = 'flex: 1; color: rgba(255,255,255,0.9);';
+      ? `<strong style="color: #22c55e;">Connected</strong> <span style="color: rgba(255,255,255,0.7);">- ${ollamaStatus.model_count} models available</span>`
+      : `<strong style="color: #ef4444;">Not Connected</strong> <span style="color: rgba(255,255,255,0.7);">- ${ollamaStatus?.error || 'Unknown error'}</span>`;
+    statusText.style.cssText = 'flex: 1;';
 
     const testBtn = el('button');
     testBtn.textContent = 'Test Connection';
@@ -319,7 +319,7 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
       margin-bottom: 16px;
     `;
     currentModelBox.innerHTML = `
-      <div style="margin-bottom: 8px; opacity: 0.7; font-size: 12px;">Current Model</div>
+      <div style="margin-bottom: 8px; color: rgba(255,255,255,0.7); font-size: 12px;">Current Model</div>
       <div style="font-size: 16px; font-weight: 500; color: #fff;">${ollamaStatus?.model || 'Not set'}</div>
     `;
     modelSection.appendChild(currentModelBox);
@@ -328,7 +328,7 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
     if (ollamaStatus?.available_models && ollamaStatus.available_models.length > 0) {
       const modelsLabel = el('div');
       modelsLabel.textContent = 'Available Models';
-      modelsLabel.style.cssText = 'margin-bottom: 8px; font-size: 13px; opacity: 0.7;';
+      modelsLabel.style.cssText = 'margin-bottom: 8px; font-size: 13px; color: rgba(255,255,255,0.7);';
       modelSection.appendChild(modelsLabel);
 
       const modelsList = el('div');
@@ -427,7 +427,7 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
     // Prompts Review Section
     const promptsSection = createSection('System Prompts & Context');
     promptsSection.innerHTML += `
-      <div style="opacity: 0.7; font-size: 13px; margin-bottom: 12px;">
+      <div style="color: rgba(255,255,255,0.7); font-size: 13px; margin-bottom: 12px;">
         These prompts shape how ReOS understands and responds to you. They're read-only for stability.
       </div>
     `;
@@ -501,7 +501,7 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
     // Custom Context Section
     const customSection = createSection('Custom Persona Text');
     customSection.innerHTML += `
-      <div style="opacity: 0.7; font-size: 13px; margin-bottom: 12px;">
+      <div style="color: rgba(255,255,255,0.7); font-size: 13px; margin-bottom: 12px;">
         Add your own text to customize how ReOS interacts with you. This is appended to the system prompt.
       </div>
     `;
@@ -577,7 +577,7 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
 
     const descEl = el('div');
     descEl.textContent = description;
-    descEl.style.cssText = 'font-size: 11px; opacity: 0.6; margin-bottom: 8px;';
+    descEl.style.cssText = 'font-size: 11px; color: rgba(255,255,255,0.6); margin-bottom: 8px;';
 
     const inputRow = el('div');
     inputRow.style.cssText = 'display: flex; gap: 8px;';
@@ -605,7 +605,7 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
 
     const descEl = el('div');
     descEl.textContent = description;
-    descEl.style.cssText = 'font-size: 11px; opacity: 0.6; margin-bottom: 8px;';
+    descEl.style.cssText = 'font-size: 11px; color: rgba(255,255,255,0.6); margin-bottom: 8px;';
 
     const contentEl = el('pre');
     contentEl.textContent = content.length > 500 ? content.slice(0, 500) + '...' : content;
@@ -682,7 +682,7 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
 
     const descEl = el('div');
     descEl.textContent = description;
-    descEl.style.cssText = 'font-size: 11px; opacity: 0.6; line-height: 1.4;';
+    descEl.style.cssText = 'font-size: 11px; color: rgba(255,255,255,0.6); line-height: 1.4;';
 
     container.appendChild(header);
     container.appendChild(slider);
