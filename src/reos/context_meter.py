@@ -132,6 +132,7 @@ def calculate_context_stats(
     play_context: str = "",
     learned_kb: str = "",
     system_state: str = "",
+    codebase_context: str = "",
     context_limit: int | None = None,
     include_breakdown: bool = False,
     disabled_sources: set[str] | None = None,
@@ -162,9 +163,10 @@ def calculate_context_stats(
     play_tokens = estimate_tokens(play_context) if "play_context" not in disabled_sources else 0
     learned_tokens = estimate_tokens(learned_kb) if "learned_kb" not in disabled_sources else 0
     state_tokens = estimate_tokens(system_state) if "system_state" not in disabled_sources else 0
+    codebase_tokens = estimate_tokens(codebase_context) if "codebase" not in disabled_sources else 0
     message_tokens = estimate_message_tokens(messages) if messages and "messages" not in disabled_sources else 0
 
-    estimated_tokens = system_tokens + play_tokens + learned_tokens + state_tokens + message_tokens
+    estimated_tokens = system_tokens + play_tokens + learned_tokens + state_tokens + codebase_tokens + message_tokens
 
     available_tokens = max(0, context_limit - RESERVED_TOKENS - estimated_tokens)
     usable_context = context_limit - RESERVED_TOKENS
@@ -206,6 +208,14 @@ def calculate_context_stats(
                 percent=(estimate_tokens(system_state) / usable_context * 100) if usable_context > 0 else 0,
                 enabled="system_state" not in disabled_sources,
                 description="Current machine state - CPU, memory, services, containers",
+            ),
+            ContextSource(
+                name="codebase",
+                display_name="Codebase Reference",
+                tokens=estimate_tokens(codebase_context),
+                percent=(estimate_tokens(codebase_context) / usable_context * 100) if usable_context > 0 else 0,
+                enabled="codebase" not in disabled_sources,
+                description="ReOS source code structure for self-awareness",
             ),
             ContextSource(
                 name="messages",

@@ -392,6 +392,11 @@ class ChatAgent:
         if system_context:
             persona_prefix = persona_prefix + "\n\n" + system_context
 
+        # Add codebase self-awareness context
+        codebase_context = self._get_codebase_context()
+        if codebase_context:
+            persona_prefix = persona_prefix + "\n\n" + codebase_context
+
         # Add conversation history context
         conversation_context = self._build_conversation_context(conversation_id)
         if conversation_context:
@@ -784,6 +789,28 @@ class ChatAgent:
             return ""
         except Exception as e:
             logger.debug("Could not load learned knowledge: %s", e)
+            return ""
+
+    def _get_codebase_context(self) -> str:
+        """Get codebase self-awareness context.
+
+        This allows ReOS to answer questions about its own implementation,
+        architecture, and source code structure.
+        """
+        try:
+            from .codebase_index import get_codebase_context as get_codebase_ctx
+
+            codebase_ctx = get_codebase_ctx()
+            if codebase_ctx.strip():
+                return (
+                    "CODEBASE_REFERENCE (ReOS source code structure):\n"
+                    "Use this to answer questions about how ReOS works, "
+                    "its architecture, modules, and implementation.\n"
+                    f"{codebase_ctx}"
+                )
+            return ""
+        except Exception as e:
+            logger.debug("Could not load codebase context: %s", e)
             return ""
 
     def _user_opted_into_diff(self, user_text: str) -> bool:
