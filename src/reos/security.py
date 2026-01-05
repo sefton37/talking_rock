@@ -359,6 +359,9 @@ class RateLimiter:
 
         # Default limits
         self._limits: dict[str, RateLimitConfig] = {
+            # Authentication (strict to prevent brute force)
+            "auth": RateLimitConfig(max_requests=5, window_seconds=60, name="login attempts"),
+            # Privileged operations
             "sudo": RateLimitConfig(max_requests=10, window_seconds=60, name="sudo commands"),
             "service": RateLimitConfig(max_requests=20, window_seconds=60, name="service operations"),
             "container": RateLimitConfig(max_requests=30, window_seconds=60, name="container operations"),
@@ -464,6 +467,13 @@ def get_rate_limiter() -> RateLimiter:
 class AuditEventType(Enum):
     """Types of security-relevant events."""
 
+    # Authentication events
+    AUTH_LOGIN_SUCCESS = "auth_login_success"
+    AUTH_LOGIN_FAILED = "auth_login_failed"
+    AUTH_LOGOUT = "auth_logout"
+    AUTH_SESSION_EXPIRED = "auth_session_expired"
+
+    # Command execution events
     COMMAND_EXECUTED = "command_executed"
     COMMAND_BLOCKED = "command_blocked"
     APPROVAL_REQUESTED = "approval_requested"

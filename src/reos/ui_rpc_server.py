@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import auth
 from .agent import ChatAgent
 from .db import Database, get_db
 from .mcp_tools import ToolError, call_tool, list_tools
@@ -92,6 +93,75 @@ def _write(obj: Any) -> None:
     except BrokenPipeError:
         # Client closed the pipe (e.g., UI exited). Treat as a clean shutdown.
         raise SystemExit(0) from None
+
+
+# -------------------------------------------------------------------------
+# Authentication handlers (PAM + session management)
+# -------------------------------------------------------------------------
+
+
+def _handle_auth_login(
+    *,
+    username: str,
+    password: str,
+) -> dict[str, Any]:
+    """Authenticate user via PAM and create session.
+
+    Security:
+    - Credentials validated locally via Linux PAM
+    - Encryption key derived from password (Scrypt)
+    - Session token returned to Rust for storage
+    - Password never stored, only used for authentication
+    """
+    # Rate limit login attempts
+    try:
+        check_rate_limit("auth")
+    except RateLimitExceeded as e:
+        audit_log(AuditEventType.RATE_LIMIT_EXCEEDED, {"category": "auth", "username": username})
+        return {"success": False, "error": str(e)}
+
+    result = auth.login(username, password)
+
+    # Audit the attempt
+    if result.get("success"):
+        audit_log(AuditEventType.AUTH_LOGIN_SUCCESS, {"username": username})
+    else:
+        audit_log(AuditEventType.AUTH_LOGIN_FAILED, {
+            "username": username,
+            "error": result.get("error", "unknown"),
+        })
+
+    return result
+
+
+def _handle_auth_logout(
+    *,
+    session_token: str,
+) -> dict[str, Any]:
+    """Destroy a session (zeroizes key material)."""
+    result = auth.logout(session_token)
+
+    if result.get("success"):
+        audit_log(AuditEventType.AUTH_LOGOUT, {"session_id": session_token[:16]})
+
+    return result
+
+
+def _handle_auth_validate(
+    *,
+    session_token: str,
+) -> dict[str, Any]:
+    """Validate a session token."""
+    return auth.validate_session(session_token)
+
+
+def _handle_auth_refresh(
+    *,
+    session_token: str,
+) -> dict[str, Any]:
+    """Refresh session activity timestamp."""
+    refreshed = auth.refresh_session(session_token)
+    return {"success": refreshed}
 
 
 def _tools_list() -> dict[str, Any]:
@@ -1447,6 +1517,54 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
 
         if method == "ping":
             return _jsonrpc_result(req_id=req_id, result={"ok": True})
+
+        # Authentication methods (PAM + session management)
+        if method == "auth/login":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            username = params.get("username")
+            password = params.get("password")
+            if not isinstance(username, str) or not username:
+                raise RpcError(code=-32602, message="username is required")
+            if not isinstance(password, str) or not password:
+                raise RpcError(code=-32602, message="password is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_auth_login(username=username, password=password),
+            )
+
+        if method == "auth/logout":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_token = params.get("session_token")
+            if not isinstance(session_token, str) or not session_token:
+                raise RpcError(code=-32602, message="session_token is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_auth_logout(session_token=session_token),
+            )
+
+        if method == "auth/validate":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_token = params.get("session_token")
+            if not isinstance(session_token, str) or not session_token:
+                raise RpcError(code=-32602, message="session_token is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_auth_validate(session_token=session_token),
+            )
+
+        if method == "auth/refresh":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_token = params.get("session_token")
+            if not isinstance(session_token, str) or not session_token:
+                raise RpcError(code=-32602, message="session_token is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_auth_refresh(session_token=session_token),
+            )
 
         if method == "tools/list":
             return _jsonrpc_result(req_id=req_id, result=_tools_list())

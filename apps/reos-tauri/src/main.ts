@@ -9,7 +9,16 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import './style.css';
 
 // Modular imports
-import { kernelRequest, KernelError } from './kernel';
+import {
+  kernelRequest,
+  KernelError,
+  AuthenticationError,
+  isAuthenticated,
+  validateSession,
+  logout,
+  getSessionUsername,
+} from './kernel';
+import { checkSessionOrLogin, showLockOverlay } from './lockScreen';
 import { el, rowHeader, label, textInput, textArea, smallButton } from './dom';
 import { createPlayOverlay } from './playOverlay';
 import type {
@@ -2535,4 +2544,67 @@ async function buildDashboardWindow() {
   setInterval(() => void refreshDashboard(), 10000);
 }
 
-buildUi();
+/**
+ * Initialize the application with authentication.
+ *
+ * Security:
+ * - Checks for existing session on startup
+ * - Shows login screen if not authenticated
+ * - Sets up session monitoring for auto-lock
+ */
+async function initializeApp(): Promise<void> {
+  const root = document.getElementById('app');
+  if (!root) return;
+
+  // Check authentication and show login if needed
+  const isValid = await checkSessionOrLogin(root, (_username) => {
+    // On successful login, build the authenticated UI
+    buildUi();
+    setupSessionMonitoring();
+  });
+
+  if (isValid) {
+    // Session is valid, build UI immediately
+    buildUi();
+    setupSessionMonitoring();
+  }
+}
+
+/**
+ * Set up session monitoring for auto-lock.
+ * Monitors for:
+ * - Session expiry (periodic validation)
+ * - Window visibility changes (potential system lock)
+ */
+function setupSessionMonitoring(): void {
+  // Check session validity every 5 minutes
+  setInterval(async () => {
+    if (!isAuthenticated()) return;
+
+    const isValid = await validateSession();
+    if (!isValid) {
+      // Session expired, show lock overlay
+      showLockOverlay(() => {
+        // Session restored, continue normally
+      });
+    }
+  }, 5 * 60 * 1000);
+
+  // Monitor visibility changes (user might have locked screen)
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible' && isAuthenticated()) {
+      // Coming back from hidden, validate session
+      const isValid = await validateSession();
+      if (!isValid) {
+        showLockOverlay(() => {
+          // Session restored
+        });
+      }
+    }
+  });
+}
+
+// Initialize app on load
+initializeApp().catch((err) => {
+  console.error('Failed to initialize app:', err);
+});

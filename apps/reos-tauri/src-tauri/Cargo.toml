@@ -13,5 +13,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 
+# Authentication & Session Management
+rand = "0.8"                   # CSPRNG for session tokens
+hex = "0.4"                    # Token encoding
+# Note: PAM authentication happens in Python kernel (python-pam)
+# Key derivation and encryption also in Python (cryptography library)
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

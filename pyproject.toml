@@ -13,6 +13,9 @@ dependencies = [
   "httpx>=0.27.0,<1.0.0",
   "uvicorn[standard]>=0.30.0,<0.32.0",
   "pydantic>=2.8.0,<3.0.0",
+  # Authentication & Encryption
+  "python-pam>=2.0.0,<3.0.0",       # PAM authentication
+  "cryptography>=42.0.0,<44.0.0",   # AES-256-GCM encryption, Argon2
 ]
 
 [project.optional-dependencies]

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .session import get_current_crypto_storage
 from .settings import settings
 
 
@@ -55,9 +56,21 @@ class FileAttachment:
 def play_root() -> Path:
     """Return the on-disk root for the theatrical model.
 
-    Stored under `.reos-data/` (local-first, git-ignored by default).
-    """
+    If running with an authenticated session, uses per-user isolated storage
+    at ~/.reos-data/{username}/play. Otherwise falls back to the repo-local
+    .reos-data/ directory.
 
+    Security:
+        - Per-user data isolation when session context is active
+        - Data can optionally be encrypted via CryptoStorage
+    """
+    # Check for per-user session context
+    crypto = get_current_crypto_storage()
+    if crypto is not None:
+        # Use per-user isolated storage
+        return crypto.user_data_root / "play"
+
+    # Fallback to default location (development/unauthenticated mode)
     base = Path(os.environ["REOS_DATA_DIR"]) if os.environ.get("REOS_DATA_DIR") else settings.data_dir
     return base / "play"
 
