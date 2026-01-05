@@ -340,3 +340,81 @@ export type IntentDetectResult = {
     path?: string;
   };
 };
+
+// Context Meter types
+export type ContextStatsResult = {
+  estimated_tokens: number;
+  context_limit: number;
+  reserved_tokens: number;
+  available_tokens: number;
+  usage_percent: number;
+  message_count: number;
+  warning_level: 'ok' | 'warning' | 'critical';
+};
+
+// Archive types
+export type ArchiveSaveResult = {
+  archive_id: string;
+  title: string;
+  message_count: number;
+  archived_at: string;
+  summary: string;
+};
+
+export type ArchiveListResult = {
+  archives: Array<{
+    archive_id: string;
+    act_id: string | null;
+    title: string;
+    created_at: string;
+    archived_at: string;
+    message_count: number;
+    summary: string;
+  }>;
+};
+
+export type ArchiveGetResult = {
+  archive_id: string;
+  act_id: string | null;
+  title: string;
+  created_at: string;
+  archived_at: string;
+  message_count: number;
+  messages: Array<{
+    role: string;
+    content: string;
+    created_at?: string;
+  }>;
+  summary: string;
+};
+
+// Compact types
+export type CompactPreviewResult = {
+  entries: Array<{
+    category: 'fact' | 'lesson' | 'decision' | 'preference' | 'observation';
+    content: string;
+  }>;
+  message_count: number;
+  existing_entry_count: number;
+};
+
+export type CompactApplyResult = {
+  added_count: number;
+  archive_id: string | null;
+  total_entries: number;
+};
+
+// Learned knowledge types
+export type LearnedGetResult = {
+  act_id: string | null;
+  entry_count: number;
+  last_updated: string;
+  markdown: string;
+  entries: Array<{
+    entry_id: string;
+    category: string;
+    content: string;
+    learned_at: string;
+    source_archive_id: string | null;
+  }>;
+};

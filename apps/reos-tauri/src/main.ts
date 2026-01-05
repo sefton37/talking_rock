@@ -42,7 +42,11 @@ import type {
   PlayKbWriteApplyResult,
   ApprovalPendingResult,
   ApprovalRespondResult,
-  ApprovalExplainResult
+  ApprovalExplainResult,
+  ContextStatsResult,
+  CompactPreviewResult,
+  CompactApplyResult,
+  ArchiveSaveResult,
 } from './types';
 
 function buildUi() {
@@ -203,6 +207,139 @@ function buildUi() {
   center.style.flex = '1';
   center.style.display = 'flex';
   center.style.flexDirection = 'column';
+
+  // --- Chat Header with Context Meter ---
+  const chatHeader = el('div');
+  chatHeader.className = 'chat-header';
+  chatHeader.style.cssText = `
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid #333;
+    background: rgba(0,0,0,0.2);
+    gap: 12px;
+  `;
+
+  // Context meter container
+  const contextMeter = el('div');
+  contextMeter.className = 'context-meter';
+  contextMeter.style.cssText = `
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  `;
+
+  const meterLabel = el('span');
+  meterLabel.textContent = 'Context:';
+  meterLabel.style.cssText = 'font-size: 11px; opacity: 0.7; color: rgba(255,255,255,0.7);';
+
+  const meterBar = el('div');
+  meterBar.className = 'meter-bar';
+  meterBar.style.cssText = `
+    flex: 1;
+    height: 6px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 3px;
+    overflow: hidden;
+    max-width: 200px;
+  `;
+
+  const meterFill = el('div');
+  meterFill.className = 'meter-fill';
+  meterFill.style.cssText = `
+    height: 100%;
+    width: 0%;
+    background: #22c55e;
+    transition: width 0.3s, background 0.3s;
+    border-radius: 3px;
+  `;
+  meterBar.appendChild(meterFill);
+
+  const meterText = el('span');
+  meterText.className = 'meter-text';
+  meterText.textContent = '0%';
+  meterText.style.cssText = 'font-size: 11px; font-family: monospace; min-width: 35px; color: rgba(255,255,255,0.9);';
+
+  contextMeter.appendChild(meterLabel);
+  contextMeter.appendChild(meterBar);
+  contextMeter.appendChild(meterText);
+
+  // Chat actions dropdown
+  const actionsContainer = el('div');
+  actionsContainer.style.cssText = 'position: relative;';
+
+  const actionsBtn = el('button');
+  actionsBtn.textContent = 'Chat Actions ▾';
+  actionsBtn.style.cssText = `
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    color: rgba(255,255,255,0.9);
+  `;
+
+  const actionsMenu = el('div');
+  actionsMenu.className = 'actions-menu';
+  actionsMenu.style.cssText = `
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    min-width: 160px;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  `;
+
+  const createMenuItem = (label: string, icon: string, onClick: () => void) => {
+    const item = el('div');
+    item.textContent = `${icon} ${label}`;
+    item.style.cssText = `
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: background 0.15s;
+      color: rgba(255,255,255,0.9);
+    `;
+    item.addEventListener('mouseenter', () => { item.style.background = 'rgba(255,255,255,0.1)'; });
+    item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
+    item.addEventListener('click', () => {
+      actionsMenu.style.display = 'none';
+      onClick();
+    });
+    return item;
+  };
+
+  actionsMenu.appendChild(createMenuItem('Archive Chat', '📦', () => void archiveChat()));
+  actionsMenu.appendChild(createMenuItem('Compact Chat', '🧠', () => void compactChat()));
+
+  const deleteDivider = el('div');
+  deleteDivider.style.cssText = 'border-top: 1px solid #444; margin: 4px 0;';
+  actionsMenu.appendChild(deleteDivider);
+
+  actionsMenu.appendChild(createMenuItem('Delete Chat', '🗑️', () => void deleteChat()));
+
+  actionsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    actionsMenu.style.display = actionsMenu.style.display === 'none' ? 'block' : 'none';
+  });
+
+  document.addEventListener('click', () => {
+    actionsMenu.style.display = 'none';
+  });
+
+  actionsContainer.appendChild(actionsBtn);
+  actionsContainer.appendChild(actionsMenu);
+
+  chatHeader.appendChild(contextMeter);
+  chatHeader.appendChild(actionsContainer);
 
   const chatLog = el('div');
   chatLog.className = 'chat-log';
@@ -448,6 +585,7 @@ function buildUi() {
     });
   }
 
+  center.appendChild(chatHeader);
   center.appendChild(chatLog);
   center.appendChild(inputRow);
 
@@ -1308,6 +1446,158 @@ function buildUi() {
   // Track current conversation for context continuity
   let currentConversationId: string | null = null;
 
+  // --- Context Meter & Chat Actions ---
+
+  async function updateContextMeter() {
+    try {
+      const stats = await kernelRequest('context/stats', {
+        conversation_id: currentConversationId,
+      }) as ContextStatsResult;
+
+      // Update progress bar
+      meterFill.style.width = `${Math.min(100, stats.usage_percent)}%`;
+      meterText.textContent = `${Math.round(stats.usage_percent)}%`;
+
+      // Color based on warning level
+      if (stats.warning_level === 'critical') {
+        meterFill.style.background = '#ef4444';
+        meterText.style.color = '#ef4444';
+      } else if (stats.warning_level === 'warning') {
+        meterFill.style.background = '#f59e0b';
+        meterText.style.color = '#f59e0b';
+      } else {
+        meterFill.style.background = '#22c55e';
+        meterText.style.color = 'inherit';
+      }
+    } catch (e) {
+      console.error('Failed to update context meter:', e);
+    }
+  }
+
+  async function archiveChat() {
+    if (!currentConversationId) {
+      append('reos', 'No active conversation to archive.');
+      return;
+    }
+
+    try {
+      const result = await kernelRequest('archive/save', {
+        conversation_id: currentConversationId,
+        act_id: activeActId,
+        generate_summary: true,
+      }) as ArchiveSaveResult;
+
+      append('reos', `Chat archived successfully (${result.message_count} messages). Archive ID: ${result.archive_id}`);
+
+      // Clear chat after archiving
+      chatLog.innerHTML = '';
+      currentConversationId = null;
+      updateContextMeter();
+    } catch (e) {
+      console.error('Failed to archive chat:', e);
+      append('reos', 'Failed to archive chat. Please try again.');
+    }
+  }
+
+  async function compactChat() {
+    if (!currentConversationId) {
+      append('reos', 'No active conversation to compact.');
+      return;
+    }
+
+    try {
+      // First, preview what will be extracted
+      const preview = await kernelRequest('compact/preview', {
+        conversation_id: currentConversationId,
+        act_id: activeActId,
+      }) as CompactPreviewResult;
+
+      if (preview.entries.length === 0) {
+        append('reos', 'No knowledge to extract from this conversation.');
+        return;
+      }
+
+      // Show preview in chat
+      const previewText = preview.entries.map(e =>
+        `• [${e.category}] ${e.content}`
+      ).join('\n');
+
+      append('reos', `Extracting ${preview.entries.length} items:\n\n${previewText}\n\nType "confirm compact" to save these to memory, or "cancel" to keep chatting.`);
+
+      // Store pending compact for confirmation
+      (window as unknown as Record<string, unknown>)._pendingCompact = {
+        conversationId: currentConversationId,
+        actId: activeActId,
+        entries: preview.entries,
+      };
+    } catch (e) {
+      console.error('Failed to preview compact:', e);
+      append('reos', 'Failed to analyze conversation. Please try again.');
+    }
+  }
+
+  async function confirmCompact() {
+    const pending = (window as unknown as Record<string, unknown>)._pendingCompact as {
+      conversationId: string;
+      actId: string | null;
+      entries: Array<{ category: string; content: string }>;
+    } | undefined;
+
+    if (!pending) {
+      append('reos', 'No pending compact to confirm.');
+      return;
+    }
+
+    try {
+      const result = await kernelRequest('compact/apply', {
+        conversation_id: pending.conversationId,
+        act_id: pending.actId,
+        entries: pending.entries,
+        archive_first: true,
+      }) as CompactApplyResult;
+
+      append('reos', `Learned ${result.added_count} new items. Total knowledge: ${result.total_entries} entries. Chat archived and cleared.`);
+
+      // Clear chat
+      chatLog.innerHTML = '';
+      currentConversationId = null;
+      delete (window as unknown as Record<string, unknown>)._pendingCompact;
+      updateContextMeter();
+    } catch (e) {
+      console.error('Failed to apply compact:', e);
+      append('reos', 'Failed to save knowledge. Please try again.');
+    }
+  }
+
+  async function deleteChat() {
+    if (!currentConversationId) {
+      append('reos', 'No active conversation to delete.');
+      return;
+    }
+
+    // Confirm deletion
+    if (!confirm('Delete this chat? This cannot be undone.')) {
+      return;
+    }
+
+    try {
+      await kernelRequest('chat/clear', {
+        conversation_id: currentConversationId,
+      });
+
+      chatLog.innerHTML = '';
+      currentConversationId = null;
+      append('reos', 'Chat deleted.');
+      updateContextMeter();
+    } catch (e) {
+      console.error('Failed to delete chat:', e);
+      append('reos', 'Failed to delete chat. Please try again.');
+    }
+  }
+
+  // Update context meter periodically and after messages
+  setInterval(() => void updateContextMeter(), 30000);
+
   // Helper to render command preview with approve/reject buttons
   function appendCommandPreview(
     approval: ApprovalPendingResult['approvals'][0],
@@ -2144,6 +2434,20 @@ function buildUi() {
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
+
+    // Handle compact confirmation commands
+    if (text.toLowerCase() === 'confirm compact') {
+      append('user', text);
+      await confirmCompact();
+      return;
+    }
+    if (text.toLowerCase() === 'cancel' && (window as unknown as Record<string, unknown>)._pendingCompact) {
+      append('user', text);
+      delete (window as unknown as Record<string, unknown>)._pendingCompact;
+      append('reos', 'Compact cancelled. Conversation continues.');
+      return;
+    }
+
     append('user', text);
 
     // Immediately show an empty ReOS bubble with a thinking animation.
@@ -2163,6 +2467,9 @@ function buildUi() {
 
       // Update conversation ID for context continuity
       currentConversationId = res.conversation_id;
+
+      // Update context meter after receiving response
+      void updateContextMeter();
 
       // If there are thinking steps, render them as collapsible bubbles before the answer
       if (res.thinking_steps && res.thinking_steps.length > 0) {

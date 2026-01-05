@@ -386,6 +386,11 @@ class ChatAgent:
         if play_context:
             persona_prefix = persona_prefix + "\n\n" + play_context
 
+        # Add learned knowledge from previous compactions
+        learned_context = self._get_learned_context()
+        if learned_context:
+            persona_prefix = persona_prefix + "\n\n" + learned_context
+
         # Add daily system state context (RAG)
         system_context = self._get_system_context()
         if system_context:
@@ -757,6 +762,33 @@ class ChatAgent:
             pass
 
         return "\n\n".join(ctx_parts)
+
+    def _get_learned_context(self) -> str:
+        """Get learned knowledge from previous compactions.
+
+        This injects facts, lessons, decisions, and preferences that the AI
+        has learned from past conversations with this user.
+        """
+        try:
+            from .knowledge_store import KnowledgeStore
+            from .play_fs import list_acts as play_list_acts
+
+            # Get active act
+            acts, active_act_id = play_list_acts()
+
+            store = KnowledgeStore()
+            learned_md = store.get_learned_markdown(active_act_id)
+
+            if learned_md.strip():
+                return (
+                    "LEARNED_KNOWLEDGE (from previous conversations):\n"
+                    "Use this to personalize responses and remember user preferences.\n"
+                    f"{learned_md}"
+                )
+            return ""
+        except Exception as e:
+            logger.debug("Could not load learned knowledge: %s", e)
+            return ""
 
     def _user_opted_into_diff(self, user_text: str) -> bool:
         t = user_text.lower()

@@ -57,6 +57,9 @@ from .play_fs import set_active_act_id as play_set_active_act_id
 from .play_fs import update_act as play_update_act
 from .play_fs import update_beat as play_update_beat
 from .play_fs import update_scene as play_update_scene
+from .context_meter import calculate_context_stats, estimate_tokens
+from .knowledge_store import KnowledgeStore
+from .compact_extractor import extract_knowledge_from_messages, generate_archive_summary
 
 _JSON = dict[str, Any]
 
@@ -1506,6 +1509,301 @@ def _handle_play_attachments_remove(
     }
 
 
+# --- Context Meter & Knowledge Management Handlers ---
+
+def _handle_context_stats(
+    db: Database,
+    *,
+    conversation_id: str | None = None,
+    context_limit: int | None = None,
+) -> dict[str, Any]:
+    """Get context usage statistics for a conversation."""
+    from .agent import ChatAgent
+
+    messages: list[dict[str, Any]] = []
+    if conversation_id:
+        raw_messages = db.get_messages(conversation_id=conversation_id, limit=100)
+        messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in raw_messages
+        ]
+
+    # Get active act for learned KB
+    acts, active_act_id = play_list_acts()
+    learned_kb = ""
+    store = KnowledgeStore()
+    if active_act_id:
+        learned_kb = store.get_learned_markdown(active_act_id)
+
+    # Estimate system prompt and play context
+    # These are approximations since we don't have direct access here
+    system_prompt_estimate = 2000  # tokens
+    play_context = play_read_me_markdown()
+
+    stats = calculate_context_stats(
+        messages=messages,
+        system_prompt="x" * (system_prompt_estimate * 4),  # Convert to chars
+        play_context=play_context,
+        learned_kb=learned_kb,
+        context_limit=context_limit,
+    )
+
+    return stats.to_dict()
+
+
+def _handle_archive_save(
+    db: Database,
+    *,
+    conversation_id: str,
+    act_id: str | None = None,
+    title: str | None = None,
+    generate_summary: bool = False,
+) -> dict[str, Any]:
+    """Archive a conversation."""
+    raw_messages = db.get_messages(conversation_id=conversation_id, limit=500)
+    if not raw_messages:
+        raise RpcError(code=-32602, message="No messages in conversation")
+
+    messages = [
+        {
+            "role": m["role"],
+            "content": m["content"],
+            "created_at": m.get("created_at", ""),
+        }
+        for m in raw_messages
+    ]
+
+    summary = ""
+    if generate_summary:
+        summary = generate_archive_summary(messages)
+
+    store = KnowledgeStore()
+    archive = store.save_archive(
+        messages=messages,
+        act_id=act_id,
+        title=title,
+        summary=summary,
+    )
+
+    return {
+        "archive_id": archive.archive_id,
+        "title": archive.title,
+        "message_count": archive.message_count,
+        "archived_at": archive.archived_at,
+        "summary": archive.summary,
+    }
+
+
+def _handle_archive_list(
+    _db: Database,
+    *,
+    act_id: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """List archives for an act (or play level)."""
+    store = KnowledgeStore()
+    archives = store.list_archives(act_id)[:limit]
+
+    return {
+        "archives": [
+            {
+                "archive_id": a.archive_id,
+                "act_id": a.act_id,
+                "title": a.title,
+                "created_at": a.created_at,
+                "archived_at": a.archived_at,
+                "message_count": a.message_count,
+                "summary": a.summary,
+            }
+            for a in archives
+        ]
+    }
+
+
+def _handle_archive_get(
+    _db: Database,
+    *,
+    archive_id: str,
+    act_id: str | None = None,
+) -> dict[str, Any]:
+    """Get a specific archive with full messages."""
+    store = KnowledgeStore()
+    archive = store.get_archive(archive_id, act_id)
+
+    if not archive:
+        raise RpcError(code=-32602, message="Archive not found")
+
+    return archive.to_dict()
+
+
+def _handle_archive_delete(
+    _db: Database,
+    *,
+    archive_id: str,
+    act_id: str | None = None,
+) -> dict[str, Any]:
+    """Delete an archive."""
+    store = KnowledgeStore()
+    deleted = store.delete_archive(archive_id, act_id)
+
+    return {"ok": deleted}
+
+
+def _handle_archive_search(
+    _db: Database,
+    *,
+    query: str,
+    act_id: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Search archives by content."""
+    store = KnowledgeStore()
+    archives = store.search_archives(query, act_id, limit)
+
+    return {
+        "archives": [
+            {
+                "archive_id": a.archive_id,
+                "act_id": a.act_id,
+                "title": a.title,
+                "created_at": a.created_at,
+                "archived_at": a.archived_at,
+                "message_count": a.message_count,
+                "summary": a.summary,
+            }
+            for a in archives
+        ]
+    }
+
+
+def _handle_compact_preview(
+    db: Database,
+    *,
+    conversation_id: str,
+    act_id: str | None = None,
+) -> dict[str, Any]:
+    """Preview knowledge extraction before compacting."""
+    raw_messages = db.get_messages(conversation_id=conversation_id, limit=500)
+    if not raw_messages:
+        raise RpcError(code=-32602, message="No messages in conversation")
+
+    messages = [
+        {"role": m["role"], "content": m["content"]}
+        for m in raw_messages
+    ]
+
+    # Get existing knowledge to help LLM avoid duplicates
+    store = KnowledgeStore()
+    existing_kb = store.get_learned_markdown(act_id)
+
+    # Extract knowledge
+    entries = extract_knowledge_from_messages(
+        messages,
+        existing_knowledge=existing_kb,
+    )
+
+    return {
+        "entries": entries,
+        "message_count": len(messages),
+        "existing_entry_count": store.get_learned_entry_count(act_id),
+    }
+
+
+def _handle_compact_apply(
+    db: Database,
+    *,
+    conversation_id: str,
+    act_id: str | None = None,
+    entries: list[dict[str, str]],
+    archive_first: bool = True,
+) -> dict[str, Any]:
+    """Apply compaction: save knowledge, optionally archive, then can clear chat."""
+    store = KnowledgeStore()
+
+    # Optionally archive first
+    archive_id = None
+    if archive_first:
+        raw_messages = db.get_messages(conversation_id=conversation_id, limit=500)
+        if raw_messages:
+            messages = [
+                {
+                    "role": m["role"],
+                    "content": m["content"],
+                    "created_at": m.get("created_at", ""),
+                }
+                for m in raw_messages
+            ]
+            archive = store.save_archive(
+                messages=messages,
+                act_id=act_id,
+                title=None,
+                summary="(compacted)",
+            )
+            archive_id = archive.archive_id
+
+    # Add learned entries
+    added = store.add_learned_entries(
+        entries=entries,
+        act_id=act_id,
+        source_archive_id=archive_id,
+        deduplicate=True,
+    )
+
+    return {
+        "added_count": len(added),
+        "archive_id": archive_id,
+        "total_entries": store.get_learned_entry_count(act_id),
+    }
+
+
+def _handle_learned_get(
+    _db: Database,
+    *,
+    act_id: str | None = None,
+) -> dict[str, Any]:
+    """Get learned knowledge for an act."""
+    store = KnowledgeStore()
+    kb = store.load_learned(act_id)
+
+    return {
+        "act_id": kb.act_id,
+        "entry_count": len(kb.entries),
+        "last_updated": kb.last_updated,
+        "markdown": kb.to_markdown(),
+        "entries": [e.to_dict() for e in kb.entries],
+    }
+
+
+def _handle_learned_clear(
+    _db: Database,
+    *,
+    act_id: str | None = None,
+) -> dict[str, Any]:
+    """Clear all learned knowledge for an act."""
+    store = KnowledgeStore()
+    store.clear_learned(act_id)
+    return {"ok": True}
+
+
+def _handle_chat_clear(
+    db: Database,
+    *,
+    conversation_id: str,
+) -> dict[str, Any]:
+    """Clear (delete) a conversation without archiving."""
+    # Delete all messages in the conversation
+    db.execute(
+        "DELETE FROM messages WHERE conversation_id = ?",
+        (conversation_id,),
+    )
+    # Delete the conversation itself
+    db.execute(
+        "DELETE FROM conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    )
+    return {"ok": True}
+
+
 def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any] | None:
     method = req.get("method")
     req_id = req.get("id")
@@ -2261,6 +2559,152 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
                     beat_id=beat_id,
                     attachment_id=attachment_id,
                 ),
+            )
+
+        # --- Context Meter & Knowledge Management ---
+
+        if method == "context/stats":
+            if not isinstance(params, dict):
+                params = {}
+            conversation_id = params.get("conversation_id")
+            context_limit = params.get("context_limit")
+            if conversation_id is not None and not isinstance(conversation_id, str):
+                raise RpcError(code=-32602, message="conversation_id must be a string")
+            if context_limit is not None and not isinstance(context_limit, int):
+                raise RpcError(code=-32602, message="context_limit must be an integer")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_context_stats(db, conversation_id=conversation_id, context_limit=context_limit),
+            )
+
+        if method == "archive/save":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            conversation_id = params.get("conversation_id")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise RpcError(code=-32602, message="conversation_id is required")
+            act_id = params.get("act_id")
+            title = params.get("title")
+            generate_summary = params.get("generate_summary", False)
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_archive_save(
+                    db,
+                    conversation_id=conversation_id,
+                    act_id=act_id,
+                    title=title,
+                    generate_summary=bool(generate_summary),
+                ),
+            )
+
+        if method == "archive/list":
+            if not isinstance(params, dict):
+                params = {}
+            act_id = params.get("act_id")
+            limit = params.get("limit", 50)
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_archive_list(db, act_id=act_id, limit=int(limit)),
+            )
+
+        if method == "archive/get":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            archive_id = params.get("archive_id")
+            if not isinstance(archive_id, str) or not archive_id:
+                raise RpcError(code=-32602, message="archive_id is required")
+            act_id = params.get("act_id")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_archive_get(db, archive_id=archive_id, act_id=act_id),
+            )
+
+        if method == "archive/delete":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            archive_id = params.get("archive_id")
+            if not isinstance(archive_id, str) or not archive_id:
+                raise RpcError(code=-32602, message="archive_id is required")
+            act_id = params.get("act_id")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_archive_delete(db, archive_id=archive_id, act_id=act_id),
+            )
+
+        if method == "archive/search":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            query = params.get("query")
+            if not isinstance(query, str) or not query:
+                raise RpcError(code=-32602, message="query is required")
+            act_id = params.get("act_id")
+            limit = params.get("limit", 20)
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_archive_search(db, query=query, act_id=act_id, limit=int(limit)),
+            )
+
+        if method == "compact/preview":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            conversation_id = params.get("conversation_id")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise RpcError(code=-32602, message="conversation_id is required")
+            act_id = params.get("act_id")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_compact_preview(db, conversation_id=conversation_id, act_id=act_id),
+            )
+
+        if method == "compact/apply":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            conversation_id = params.get("conversation_id")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise RpcError(code=-32602, message="conversation_id is required")
+            entries = params.get("entries", [])
+            if not isinstance(entries, list):
+                raise RpcError(code=-32602, message="entries must be a list")
+            act_id = params.get("act_id")
+            archive_first = params.get("archive_first", True)
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_compact_apply(
+                    db,
+                    conversation_id=conversation_id,
+                    act_id=act_id,
+                    entries=entries,
+                    archive_first=bool(archive_first),
+                ),
+            )
+
+        if method == "learned/get":
+            if not isinstance(params, dict):
+                params = {}
+            act_id = params.get("act_id")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_learned_get(db, act_id=act_id),
+            )
+
+        if method == "learned/clear":
+            if not isinstance(params, dict):
+                params = {}
+            act_id = params.get("act_id")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_learned_clear(db, act_id=act_id),
+            )
+
+        if method == "chat/clear":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            conversation_id = params.get("conversation_id")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise RpcError(code=-32602, message="conversation_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_chat_clear(db, conversation_id=conversation_id),
             )
 
         raise RpcError(code=-32601, message=f"Method not found: {method}")
