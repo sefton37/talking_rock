@@ -23,6 +23,7 @@ import { el, rowHeader, label, textInput, textArea, smallButton } from './dom';
 import { createPlayOverlay } from './playOverlay';
 import { createSettingsOverlay } from './settingsOverlay';
 import { createContextOverlay } from './contextOverlay';
+import { renderCollapsedDiffPreview } from './diffPreview';
 import type {
   ChatRespondResult,
   SystemInfoResult,
@@ -2629,6 +2630,20 @@ function buildUi() {
         playInspectorActive = false;  // Switch back to Message Inspector mode
         showMessageInInspector(res);
       });
+
+      // Code Mode: Display diff preview if present
+      if (res.diff_preview && res.diff_preview.preview) {
+        const diffEl = renderCollapsedDiffPreview(
+          res.diff_preview.preview,
+          res.diff_preview.session_id,
+          () => {
+            // Called when all changes are applied or rejected
+            // Could update UI or show confirmation here
+            console.log('Diff preview completed');
+          }
+        );
+        pending.row.appendChild(diffEl);
+      }
 
       // Check if there are pending approvals to display
       if (res.pending_approval_id) {

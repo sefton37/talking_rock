@@ -75,6 +75,17 @@ from reos.code_mode.executor import (
     DebugDiagnosis,
 )
 
+# Diff Preview
+from reos.code_mode.diff_utils import (
+    DiffPreviewManager,
+    DiffPreview,
+    FileChange,
+    ChangeType,
+    Hunk,
+    generate_diff,
+    generate_edit_diff,
+)
+
 __all__ = [
     # Sandbox
     "CodeSandbox",
@@ -121,4 +132,12 @@ __all__ = [
     "LoopIteration",
     "StepResult",
     "DebugDiagnosis",
+    # Diff Preview
+    "DiffPreviewManager",
+    "DiffPreview",
+    "FileChange",
+    "ChangeType",
+    "Hunk",
+    "generate_diff",
+    "generate_edit_diff",
 ]

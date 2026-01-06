@@ -593,3 +593,133 @@ body,
 	background: rgba(239, 68, 68, 0.2);
 	color: #f87171;
 }
+
+/* ============================= */
+/* Code Mode - Diff Preview      */
+/* ============================= */
+
+.diff-preview {
+	font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+.diff-preview-collapsed {
+	transition: all 0.2s ease;
+}
+
+.diff-preview-collapsed:hover {
+	background: rgba(59, 130, 246, 0.12) !important;
+	border-color: rgba(59, 130, 246, 0.3) !important;
+}
+
+/* Diff line highlighting */
+.diff-line-added {
+	background: rgba(34, 197, 94, 0.15);
+	color: #22c55e;
+}
+
+.diff-line-removed {
+	background: rgba(239, 68, 68, 0.15);
+	color: #ef4444;
+}
+
+.diff-line-context {
+	color: #9ca3af;
+}
+
+/* Diff hunk header */
+.diff-hunk-header {
+	color: #3b82f6;
+	background: rgba(59, 130, 246, 0.1);
+	padding: 4px 8px;
+	border-radius: 4px 4px 0 0;
+	font-size: 11px;
+}
+
+/* File change badges */
+.diff-badge {
+	font-size: 10px;
+	font-weight: 600;
+	padding: 2px 6px;
+	border-radius: 4px;
+	text-transform: uppercase;
+}
+
+.diff-badge-create {
+	background: rgba(34, 197, 94, 0.2);
+	color: #22c55e;
+}
+
+.diff-badge-modify {
+	background: rgba(59, 130, 246, 0.2);
+	color: #3b82f6;
+}
+
+.diff-badge-delete {
+	background: rgba(239, 68, 68, 0.2);
+	color: #ef4444;
+}
+
+.diff-badge-rename {
+	background: rgba(168, 85, 247, 0.2);
+	color: #a855f7;
+}
+
+/* Diff action buttons */
+.diff-action-btn {
+	font-size: 11px;
+	padding: 4px 8px;
+	border-radius: 6px;
+	border: 1px solid;
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.diff-action-btn-apply {
+	background: rgba(34, 197, 94, 0.2);
+	border-color: rgba(34, 197, 94, 0.4);
+	color: #22c55e;
+}
+
+.diff-action-btn-apply:hover {
+	background: rgba(34, 197, 94, 0.3);
+}
+
+.diff-action-btn-reject {
+	background: rgba(239, 68, 68, 0.2);
+	border-color: rgba(239, 68, 68, 0.4);
+	color: #ef4444;
+}
+
+.diff-action-btn-reject:hover {
+	background: rgba(239, 68, 68, 0.3);
+}
+
+/* Line numbers */
+.diff-line-number {
+	color: #6b7280;
+	width: 70px;
+	text-align: right;
+	padding-right: 8px;
+	user-select: none;
+	flex-shrink: 0;
+}
+
+/* Scrollbar for diff content */
+.diff-preview ::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+.diff-preview ::-webkit-scrollbar-track {
+	background: rgba(0, 0, 0, 0.1);
+	border-radius: 4px;
+}
+
+.diff-preview ::-webkit-scrollbar-thumb {
+	background: rgba(100, 100, 120, 0.3);
+	border-radius: 4px;
+}
+
+.diff-preview ::-webkit-scrollbar-thumb:hover {
+	background: rgba(100, 100, 120, 0.5);
+}

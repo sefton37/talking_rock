@@ -31,6 +31,11 @@ export type ChatRespondResult = {
   thinking_steps: string[];  // Chain of thought - reasoning steps before final answer
   pending_approval_id: string | null;
   intent_handled?: 'approval' | 'rejection';  // Phase 6: Set when a conversational intent was handled
+  // Code Mode: Diff preview for pending file changes
+  diff_preview?: {
+    session_id: string;
+    preview: DiffPreview;
+  };
 };
 
 // Conversation types
@@ -432,4 +437,59 @@ export type LearnedGetResult = {
     learned_at: string;
     source_archive_id: string | null;
   }>;
+};
+
+// Code Mode Diff Preview types
+export type DiffHunk = {
+  old_start: number;
+  old_count: number;
+  new_start: number;
+  new_count: number;
+  lines: string[];
+  header: string;
+};
+
+export type DiffFileChange = {
+  path: string;
+  change_type: 'create' | 'modify' | 'delete' | 'rename';
+  hunks: DiffHunk[];
+  diff_text: string;
+  old_sha256: string | null;
+  new_sha256: string | null;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+export type DiffPreview = {
+  preview_id: string;
+  changes: DiffFileChange[];
+  total_additions: number;
+  total_deletions: number;
+  total_files: number;
+  created_at: string;
+};
+
+export type CodeDiffPreviewResult = {
+  preview: DiffPreview | null;
+  message: string;
+};
+
+export type CodeDiffAddChangeResult = {
+  ok: boolean;
+  change: DiffFileChange;
+};
+
+export type CodeDiffApplyResult = {
+  ok: boolean;
+  applied: string[];
+};
+
+export type CodeDiffRejectResult = {
+  ok: boolean;
+  rejected: string[] | 'all';
+};
+
+export type CodeDiffClearResult = {
+  ok: boolean;
 };

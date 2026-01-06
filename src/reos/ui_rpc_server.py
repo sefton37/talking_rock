@@ -696,6 +696,151 @@ def _handle_execution_rollback(
 
 
 # -------------------------------------------------------------------------
+# Code Mode Diff Preview handlers
+# -------------------------------------------------------------------------
+
+# Track active diff preview managers per session
+_diff_preview_managers: dict[str, "DiffPreviewManager"] = {}
+
+
+def _get_diff_preview_manager(session_id: str, repo_path: str | None = None) -> "DiffPreviewManager":
+    """Get or create a DiffPreviewManager for a session."""
+    from pathlib import Path
+    from .code_mode import CodeSandbox, DiffPreviewManager
+
+    if session_id not in _diff_preview_managers:
+        if not repo_path:
+            raise RpcError(code=-32602, message="repo_path required for new diff session")
+        sandbox = CodeSandbox(Path(repo_path))
+        _diff_preview_managers[session_id] = DiffPreviewManager(sandbox)
+
+    return _diff_preview_managers[session_id]
+
+
+def _handle_code_diff_preview(
+    db: Database,
+    *,
+    session_id: str,
+) -> dict[str, Any]:
+    """Get the current diff preview for a session."""
+    if session_id not in _diff_preview_managers:
+        return {"preview": None, "message": "No pending changes"}
+
+    manager = _diff_preview_managers[session_id]
+    preview = manager.get_preview()
+    return {
+        "preview": preview.to_dict(),
+        "message": f"{preview.total_files} file(s) with {preview.total_additions} additions, {preview.total_deletions} deletions",
+    }
+
+
+def _handle_code_diff_add_change(
+    db: Database,
+    *,
+    session_id: str,
+    repo_path: str,
+    change_type: str,
+    path: str,
+    content: str | None = None,
+    old_str: str | None = None,
+    new_str: str | None = None,
+) -> dict[str, Any]:
+    """Add a file change to the diff preview.
+
+    change_type: "create", "write", "edit", "delete"
+    """
+    manager = _get_diff_preview_manager(session_id, repo_path)
+
+    if change_type == "create":
+        if content is None:
+            raise RpcError(code=-32602, message="content required for create")
+        change = manager.add_create(path, content)
+    elif change_type == "write":
+        if content is None:
+            raise RpcError(code=-32602, message="content required for write")
+        change = manager.add_write(path, content)
+    elif change_type == "edit":
+        if old_str is None or new_str is None:
+            raise RpcError(code=-32602, message="old_str and new_str required for edit")
+        change = manager.add_edit(path, old_str, new_str)
+    elif change_type == "delete":
+        change = manager.add_delete(path)
+    else:
+        raise RpcError(code=-32602, message=f"Unknown change_type: {change_type}")
+
+    return {
+        "ok": True,
+        "change": change.to_dict(),
+    }
+
+
+def _handle_code_diff_apply(
+    db: Database,
+    *,
+    session_id: str,
+    path: str | None = None,
+) -> dict[str, Any]:
+    """Apply changes - either all or a specific file."""
+    if session_id not in _diff_preview_managers:
+        raise RpcError(code=-32602, message="No pending changes for this session")
+
+    manager = _diff_preview_managers[session_id]
+
+    if path:
+        # Apply single file
+        success = manager.apply_file(path)
+        if not success:
+            raise RpcError(code=-32602, message=f"No pending change for path: {path}")
+        return {"ok": True, "applied": [path]}
+    else:
+        # Apply all
+        applied = manager.apply_all()
+        # Clean up manager if all changes applied
+        if session_id in _diff_preview_managers:
+            del _diff_preview_managers[session_id]
+        return {"ok": True, "applied": applied}
+
+
+def _handle_code_diff_reject(
+    db: Database,
+    *,
+    session_id: str,
+    path: str | None = None,
+) -> dict[str, Any]:
+    """Reject changes - either all or a specific file."""
+    if session_id not in _diff_preview_managers:
+        raise RpcError(code=-32602, message="No pending changes for this session")
+
+    manager = _diff_preview_managers[session_id]
+
+    if path:
+        # Reject single file
+        success = manager.reject_file(path)
+        if not success:
+            raise RpcError(code=-32602, message=f"No pending change for path: {path}")
+        return {"ok": True, "rejected": [path]}
+    else:
+        # Reject all
+        manager.reject_all()
+        # Clean up manager
+        if session_id in _diff_preview_managers:
+            del _diff_preview_managers[session_id]
+        return {"ok": True, "rejected": "all"}
+
+
+def _handle_code_diff_clear(
+    db: Database,
+    *,
+    session_id: str,
+) -> dict[str, Any]:
+    """Clear all pending changes for a session."""
+    if session_id in _diff_preview_managers:
+        _diff_preview_managers[session_id].clear()
+        del _diff_preview_managers[session_id]
+    return {"ok": True}
+
+
+# -------------------------------------------------------------------------
 # Streaming execution handlers (Phase 4)
 # -------------------------------------------------------------------------
 
@@ -3359,6 +3504,90 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
             return _jsonrpc_result(
                 req_id=req_id,
                 result=_handle_chat_clear(db, conversation_id=conversation_id),
+            )
+
+        # --- Code Mode Diff Preview ---
+
+        if method == "code/diff/preview":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_id = params.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise RpcError(code=-32602, message="session_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_diff_preview(db, session_id=session_id),
+            )
+
+        if method == "code/diff/add_change":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_id = params.get("session_id")
+            repo_path = params.get("repo_path")
+            change_type = params.get("change_type")
+            path = params.get("path")
+            if not isinstance(session_id, str) or not session_id:
+                raise RpcError(code=-32602, message="session_id is required")
+            if not isinstance(repo_path, str) or not repo_path:
+                raise RpcError(code=-32602, message="repo_path is required")
+            if not isinstance(change_type, str) or not change_type:
+                raise RpcError(code=-32602, message="change_type is required")
+            if not isinstance(path, str) or not path:
+                raise RpcError(code=-32602, message="path is required")
+            content = params.get("content")
+            old_str = params.get("old_str")
+            new_str = params.get("new_str")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_diff_add_change(
+                    db,
+                    session_id=session_id,
+                    repo_path=repo_path,
+                    change_type=change_type,
+                    path=path,
+                    content=content,
+                    old_str=old_str,
+                    new_str=new_str,
+                ),
+            )
+
+        if method == "code/diff/apply":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_id = params.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise RpcError(code=-32602, message="session_id is required")
+            path = params.get("path")  # Optional - apply specific file
+            if path is not None and not isinstance(path, str):
+                raise RpcError(code=-32602, message="path must be a string or null")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_diff_apply(db, session_id=session_id, path=path),
+            )
+
+        if method == "code/diff/reject":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_id = params.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise RpcError(code=-32602, message="session_id is required")
+            path = params.get("path")  # Optional - reject specific file
+            if path is not None and not isinstance(path, str):
+                raise RpcError(code=-32602, message="path must be a string or null")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_diff_reject(db, session_id=session_id, path=path),
+            )
+
+        if method == "code/diff/clear":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_id = params.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise RpcError(code=-32602, message="session_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_diff_clear(db, session_id=session_id),
             )
 
         raise RpcError(code=-32601, message=f"Method not found: {method}")
