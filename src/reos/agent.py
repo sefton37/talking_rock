@@ -1012,6 +1012,10 @@ class ChatAgent:
             # Fallback: return empty - don't assume system tools
             return []
 
+        # Handle case where LLM returns a list directly instead of dict
+        if not isinstance(payload, dict):
+            return []
+
         calls = payload.get("tool_calls")
         if not isinstance(calls, list):
             return []

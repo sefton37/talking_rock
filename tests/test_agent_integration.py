@@ -56,10 +56,11 @@ class FakeOllama:
             raise self._chat_json_error
 
         # Detect call type based on system prompt content
+        # Use specific phrases to avoid false matches (e.g., "llm_planner.py" in codebase context)
         if "intent parser" in system.lower():
             # Intent parsing call - return query intent (no plan)
             return json.dumps(self._intent_response)
-        elif "planner" in system.lower() or "generate a plan" in system.lower():
+        elif "system administration planner" in system.lower() or "generate a plan" in system.lower():
             # Plan generation call - return empty steps
             return "[]"
         else:
@@ -211,8 +212,10 @@ class TestChatAgentRespond:
         agent = ChatAgent(db=get_db(), ollama=ollama)
         result = agent.respond("Hello")
 
-        # Should fallback to linux_system_info (Linux-focused)
-        assert "linux_system_info" in calls
+        # When JSON is invalid, agent should NOT call any tools (safe fallback)
+        assert len(calls) == 0
+        # Should still return a response
+        assert result.answer == "Fallback response."
 
 
 class TestChatAgentDiffHandling:

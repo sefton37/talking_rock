@@ -160,5 +160,5 @@ def test_agent_falls_back_on_invalid_json_tool_plan(
     monkeypatch.setattr(agent, "_try_reasoning", lambda *args, **kwargs: None)
     _answer = agent.respond("Hello")
 
-    # Fallback should attempt linux_system_info (Linux-focused default)
-    assert calls[:1] == ["linux_system_info"]
+    # When JSON is invalid, agent should NOT call any tools (safe fallback)
+    assert calls == []

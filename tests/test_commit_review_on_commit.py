@@ -31,10 +31,15 @@ def test_poll_commits_and_review_creates_event(
     db = get_db()
     repo_path = configured_repo
 
-    # Enable commit review + diff capture (explicit opt-in).
+    # Enable git integration and commit review + diff capture (explicit opt-in).
     monkeypatch.setattr(
         "reos.commit_watch.settings",
-        replace(settings, auto_review_commits=True, auto_review_commits_include_diff=True),
+        replace(
+            settings,
+            git_integration_enabled=True,
+            auto_review_commits=True,
+            auto_review_commits_include_diff=True,
+        ),
     )
 
     # First poll should initialize last_head without reviewing.
