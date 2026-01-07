@@ -1,28 +1,23 @@
 """Code Mode - Agentic coding capabilities for ReOS.
 
-When an Act has a repository assigned, ReOS enters "Code Mode" providing
-Claude Code-like capabilities: read, write, edit files, run tests, and
-iterate on errors - all sandboxed to the assigned repository.
-
-The execution loop follows a principled cycle:
-1. INTENT - Discover what the user truly wants from multiple sources
-2. CONTRACT - Define explicit, testable success criteria
-3. DECOMPOSE - Break into atomic steps
-4. BUILD - Execute the most concrete step
-5. VERIFY - Test that step fulfills its part
-6. INTEGRATE - Merge verified code
-7. GAP - Check what remains, loop until complete
+Simplified execution loop:
+1. INTENT - Understand what the user wants
+2. CONTRACT - Define testable success criteria
+3. PLAN - Break into steps
+4. BUILD - Execute steps
+5. VERIFY - Check results
+6. Loop until complete or max iterations
 """
 
 from __future__ import annotations
 
-# Sandbox
+# Core - Sandbox for file operations
 from reos.code_mode.sandbox import CodeSandbox, CodeSandboxError
 
-# Router
+# Core - Router for request classification
 from reos.code_mode.router import CodeModeRouter, RoutingDecision, RequestType
 
-# Planner (Sprint 2)
+# Core - Planning
 from reos.code_mode.planner import (
     CodePlanner,
     CodeTaskPlan,
@@ -31,16 +26,17 @@ from reos.code_mode.planner import (
     ImpactLevel,
 )
 
-# Intent Discovery (Sprint 3)
+# Core - Intent Discovery
 from reos.code_mode.intent import (
     IntentDiscoverer,
     DiscoveredIntent,
     PromptIntent,
     PlayIntent,
     CodebaseIntent,
+    LayerResponsibility,
 )
 
-# Contract (Sprint 3)
+# Core - Contract (acceptance criteria)
 from reos.code_mode.contract import (
     Contract,
     ContractBuilder,
@@ -49,12 +45,42 @@ from reos.code_mode.contract import (
     AcceptanceCriterion,
     CriterionType,
     TestSpecification,
+    LayerConstraint,
 )
 
-# Test Generator (Test-First Contracts)
-from reos.code_mode.test_generator import TestGenerator
+# Core - Executor (main loop)
+from reos.code_mode.executor import (
+    CodeExecutor,
+    ExecutionState,
+    ExecutionResult,
+    LoopStatus,
+    LoopIteration,
+    StepResult,
+    DebugDiagnosis,
+)
 
-# Perspectives (Sprint 3)
+# Core - Streaming (UI state updates)
+from reos.code_mode.streaming import (
+    ExecutionStateSnapshot,
+    CodeExecutionContext,
+    ExecutionObserver,
+    ExecutionCancelledError,
+    create_execution_context,
+    PHASE_INFO,
+)
+
+# Supporting - Diff Preview
+from reos.code_mode.diff_utils import (
+    DiffPreviewManager,
+    DiffPreview,
+    FileChange,
+    ChangeType,
+    Hunk,
+    generate_diff,
+    generate_edit_diff,
+)
+
+# Supporting - Perspectives (may be removed)
 from reos.code_mode.perspectives import (
     PerspectiveManager,
     Perspective,
@@ -68,70 +94,40 @@ from reos.code_mode.perspectives import (
     GAP_ANALYZER,
 )
 
-# Executor (Sprint 3)
-from reos.code_mode.executor import (
-    CodeExecutor,
-    ExecutionState,
-    ExecutionResult,
-    LoopStatus,
-    LoopIteration,
-    StepResult,
-    DebugDiagnosis,
+# Supporting - Test Generator
+from reos.code_mode.test_generator import TestGenerator
+
+# Supporting - Session Logger (verbose debugging)
+from reos.code_mode.session_logger import SessionLogger, list_sessions, get_session_log
+
+# Core - Recursive Intention-Verification Architecture (RIVA)
+from reos.code_mode.intention import (
+    Intention,
+    IntentionStatus,
+    Cycle,
+    Action,
+    ActionType,
+    Judgment,
+    WorkContext,
+    AutoCheckpoint,
+    Session as RIVASession,
+    work as riva_work,
+    can_verify_directly,
+    should_decompose,
+    decompose,
 )
 
-# Diff Preview
-from reos.code_mode.diff_utils import (
-    DiffPreviewManager,
-    DiffPreview,
-    FileChange,
-    ChangeType,
-    Hunk,
-    generate_diff,
-    generate_edit_diff,
+# Supporting - Multi-path Exploration
+from reos.code_mode.explorer import (
+    StepExplorer,
+    StepAlternative,
+    ExplorationState,
 )
 
-# Repository Map (Semantic Code Understanding)
-from reos.code_mode.symbol_extractor import (
-    SymbolExtractor,
-    Symbol,
-    SymbolKind,
-    Location,
-    FileNode,
-    DependencyEdge,
-    compute_file_hash,
-)
-from reos.code_mode.dependency_graph import (
-    DependencyGraphBuilder,
-    ImportInfo,
-)
-from reos.code_mode.repo_map import (
-    RepoMap,
-    IndexResult,
-    FileContext,
-)
-from reos.code_mode.embeddings import (
-    EmbeddingManager,
-    EmbeddingError,
-    EmbeddingResult,
-)
+# Repository Map - REMOVED for simplification
+# To re-enable, restore repo_map.py, symbol_extractor.py, dependency_graph.py
 
-# LSP Integration (Language Server Protocol)
-from reos.code_mode.lsp_client import (
-    LSPClient,
-    LSPClientError,
-    LSPLocation,
-    Diagnostic,
-    HoverInfo,
-)
-from reos.code_mode.lsp_manager import (
-    LSPManager,
-    LanguageServerConfig,
-    DEFAULT_SERVERS,
-    check_lsp_server,
-    get_available_servers,
-)
-
-# Project Memory (Long-term learning)
+# Optional - Project Memory (can be disabled)
 from reos.code_mode.project_memory import (
     ProjectMemoryStore,
     ProjectDecision,
@@ -142,50 +138,24 @@ from reos.code_mode.project_memory import (
     ProjectMemoryContext,
 )
 
-# Streaming (Real-time execution UI)
-from reos.code_mode.streaming import (
-    ExecutionStateSnapshot,
-    CodeExecutionContext,
-    ExecutionObserver,
-    ExecutionCancelledError,
-    create_execution_context,
-    PHASE_INFO,
-)
-
-# Multi-path Exploration
-from reos.code_mode.explorer import (
-    StepExplorer,
-    StepAlternative,
-    ExplorationState,
-)
-
-# API Documentation Lookup (prevent hallucination)
-from reos.code_mode.api_docs import (
-    APIDocumentation,
-    APIDocumentationLookup,
-)
-
 __all__ = [
-    # Sandbox
+    # Core
     "CodeSandbox",
     "CodeSandboxError",
-    # Router
     "CodeModeRouter",
     "RoutingDecision",
     "RequestType",
-    # Planner
     "CodePlanner",
     "CodeTaskPlan",
     "CodeStep",
     "CodeStepType",
     "ImpactLevel",
-    # Intent
     "IntentDiscoverer",
     "DiscoveredIntent",
     "PromptIntent",
     "PlayIntent",
     "CodebaseIntent",
-    # Contract
+    "LayerResponsibility",
     "Contract",
     "ContractBuilder",
     "ContractStatus",
@@ -193,9 +163,28 @@ __all__ = [
     "AcceptanceCriterion",
     "CriterionType",
     "TestSpecification",
-    # Test Generator
-    "TestGenerator",
-    # Perspectives
+    "LayerConstraint",
+    "CodeExecutor",
+    "ExecutionState",
+    "ExecutionResult",
+    "LoopStatus",
+    "LoopIteration",
+    "StepResult",
+    "DebugDiagnosis",
+    "ExecutionStateSnapshot",
+    "CodeExecutionContext",
+    "ExecutionObserver",
+    "ExecutionCancelledError",
+    "create_execution_context",
+    "PHASE_INFO",
+    # Supporting
+    "DiffPreviewManager",
+    "DiffPreview",
+    "FileChange",
+    "ChangeType",
+    "Hunk",
+    "generate_diff",
+    "generate_edit_diff",
     "PerspectiveManager",
     "Perspective",
     "Phase",
@@ -206,50 +195,28 @@ __all__ = [
     "DEBUGGER",
     "INTEGRATOR",
     "GAP_ANALYZER",
-    # Executor
-    "CodeExecutor",
-    "ExecutionState",
-    "ExecutionResult",
-    "LoopStatus",
-    "LoopIteration",
-    "StepResult",
-    "DebugDiagnosis",
-    # Diff Preview
-    "DiffPreviewManager",
-    "DiffPreview",
-    "FileChange",
-    "ChangeType",
-    "Hunk",
-    "generate_diff",
-    "generate_edit_diff",
-    # Repository Map
-    "SymbolExtractor",
-    "Symbol",
-    "SymbolKind",
-    "Location",
-    "FileNode",
-    "DependencyEdge",
-    "compute_file_hash",
-    "DependencyGraphBuilder",
-    "ImportInfo",
-    "RepoMap",
-    "IndexResult",
-    "FileContext",
-    "EmbeddingManager",
-    "EmbeddingError",
-    "EmbeddingResult",
-    # LSP Integration
-    "LSPClient",
-    "LSPClientError",
-    "LSPLocation",
-    "Diagnostic",
-    "HoverInfo",
-    "LSPManager",
-    "LanguageServerConfig",
-    "DEFAULT_SERVERS",
-    "check_lsp_server",
-    "get_available_servers",
-    # Project Memory
+    "TestGenerator",
+    "SessionLogger",
+    "list_sessions",
+    "get_session_log",
+    # RIVA
+    "Intention",
+    "IntentionStatus",
+    "Cycle",
+    "Action",
+    "ActionType",
+    "Judgment",
+    "WorkContext",
+    "AutoCheckpoint",
+    "RIVASession",
+    "riva_work",
+    "can_verify_directly",
+    "should_decompose",
+    "decompose",
+    "StepExplorer",
+    "StepAlternative",
+    "ExplorationState",
+    # Optional
     "ProjectMemoryStore",
     "ProjectDecision",
     "ProjectPattern",
@@ -257,18 +224,4 @@ __all__ = [
     "CodingSession",
     "CodeChange",
     "ProjectMemoryContext",
-    # Streaming
-    "ExecutionStateSnapshot",
-    "CodeExecutionContext",
-    "ExecutionObserver",
-    "ExecutionCancelledError",
-    "create_execution_context",
-    "PHASE_INFO",
-    # Multi-path Exploration
-    "StepExplorer",
-    "StepAlternative",
-    "ExplorationState",
-    # API Documentation Lookup
-    "APIDocumentation",
-    "APIDocumentationLookup",
 ]

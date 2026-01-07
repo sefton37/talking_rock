@@ -571,6 +571,98 @@ export function createPlayOverlay(onClose: () => void): {
 
     content.appendChild(titleInput);
 
+    // Repository Path (only for Acts)
+    if (state.selectedLevel === 'act' && state.activeActId) {
+      const repoSection = el('div');
+      repoSection.className = 'play-repo-section';
+      repoSection.style.marginBottom = '16px';
+      repoSection.style.padding = '12px';
+      repoSection.style.background = 'rgba(255, 255, 255, 0.03)';
+      repoSection.style.borderRadius = '8px';
+      repoSection.style.border = '1px solid rgba(255, 255, 255, 0.1)';
+
+      const repoLabel = el('div');
+      repoLabel.textContent = 'Repository Path';
+      repoLabel.style.fontSize = '11px';
+      repoLabel.style.color = 'rgba(255, 255, 255, 0.5)';
+      repoLabel.style.marginBottom = '8px';
+      repoLabel.style.textTransform = 'uppercase';
+      repoLabel.style.letterSpacing = '0.5px';
+
+      const repoRow = el('div');
+      repoRow.style.display = 'flex';
+      repoRow.style.gap = '8px';
+      repoRow.style.alignItems = 'center';
+
+      const repoInput = el('input') as HTMLInputElement;
+      repoInput.type = 'text';
+      repoInput.placeholder = '~/projects/my-project';
+      repoInput.style.flex = '1';
+      repoInput.style.padding = '8px 12px';
+      repoInput.style.background = 'rgba(0, 0, 0, 0.3)';
+      repoInput.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+      repoInput.style.borderRadius = '6px';
+      repoInput.style.color = '#fff';
+      repoInput.style.fontSize = '13px';
+
+      // Find current act's repo_path
+      const currentAct = state.actsCache.find(a => a.act_id === state.activeActId);
+      repoInput.value = currentAct?.repo_path ?? '';
+
+      const repoBtn = el('button');
+      repoBtn.textContent = currentAct?.repo_path ? 'Update' : 'Set Repo';
+      repoBtn.style.padding = '8px 16px';
+      repoBtn.style.background = currentAct?.repo_path ? 'rgba(34, 197, 94, 0.2)' : 'rgba(59, 130, 246, 0.3)';
+      repoBtn.style.border = `1px solid ${currentAct?.repo_path ? '#22c55e' : '#3b82f6'}`;
+      repoBtn.style.borderRadius = '6px';
+      repoBtn.style.color = currentAct?.repo_path ? '#22c55e' : '#60a5fa';
+      repoBtn.style.fontSize = '12px';
+      repoBtn.style.cursor = 'pointer';
+      repoBtn.style.fontWeight = '500';
+
+      repoBtn.addEventListener('click', async () => {
+        const path = repoInput.value.trim();
+        if (!path) {
+          repoStatus.textContent = 'Please enter a path';
+          repoStatus.style.color = '#ef4444';
+          return;
+        }
+        try {
+          repoBtn.disabled = true;
+          repoBtn.textContent = 'Setting...';
+          await kernelRequest('play/acts/assign_repo', {
+            act_id: state.activeActId,
+            repo_path: path,
+          });
+          await refreshData();
+          render();
+        } catch (e) {
+          repoStatus.textContent = `Error: ${e}`;
+          repoStatus.style.color = '#ef4444';
+          repoBtn.disabled = false;
+          repoBtn.textContent = 'Set Repo';
+        }
+      });
+
+      const repoStatus = el('div');
+      repoStatus.style.fontSize = '11px';
+      repoStatus.style.marginTop = '6px';
+      if (currentAct?.repo_path) {
+        repoStatus.textContent = `Code Mode ready: ${currentAct.repo_path}`;
+        repoStatus.style.color = '#22c55e';
+      } else {
+        repoStatus.textContent = 'No repository set. Required for Code Mode.';
+        repoStatus.style.color = '#f59e0b';
+      }
+
+      repoRow.appendChild(repoInput);
+      repoRow.appendChild(repoBtn);
+      repoSection.appendChild(repoLabel);
+      repoSection.appendChild(repoRow);
+      repoSection.appendChild(repoStatus);
+      content.appendChild(repoSection);
+    }
+
     // Editor area
     const editorWrap = el('div');
     editorWrap.className = 'play-editor-wrap';

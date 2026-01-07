@@ -105,7 +105,10 @@ class OllamaProvider:
         temperature: float | None = None,
         top_p: float | None = None,
     ) -> str:
-        """Generate JSON-formatted response."""
+        """Generate JSON-formatted response.
+
+        Handles models that wrap JSON in markdown code blocks.
+        """
         payload = self._build_payload(
             system=system,
             user=user,
@@ -113,7 +116,33 @@ class OllamaProvider:
             top_p=top_p,
         )
         payload["format"] = "json"
-        return self._post_chat(payload, timeout_seconds)
+        response = self._post_chat(payload, timeout_seconds)
+
+        # Some models (like magistral) wrap JSON in markdown code blocks
+        # Extract the JSON if it's wrapped
+        return self._extract_json(response)
+
+    def _extract_json(self, response: str) -> str:
+        """Extract JSON from response that might be wrapped in markdown."""
+        import re
+
+        # If it already looks like raw JSON, return as-is
+        stripped = response.strip()
+        if stripped.startswith('{') or stripped.startswith('['):
+            return stripped
+
+        # Try to extract from markdown code block: ```json ... ```
+        json_block = re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?```', response)
+        if json_block:
+            return json_block.group(1).strip()
+
+        # Try to find JSON object/array anywhere in the response
+        json_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', response)
+        if json_match:
+            return json_match.group(1).strip()
+
+        # Nothing found, return original (will likely fail JSON parse)
+        return response
 
     def list_models(self) -> list[ModelInfo]:
         """List available Ollama models."""
@@ -237,9 +266,26 @@ class OllamaProvider:
         try:
             models = self.list_models()
             if models:
+                # Prefer smaller, reliable models that follow JSON format well
+                # Larger models like magistral may ignore format directives
+                preferred_patterns = [
+                    "mistral", "llama3", "qwen", "gemma", "phi",
+                    "deepseek-coder", "codellama", "starcoder"
+                ]
+                model_names = [m.name for m in models]
+
+                # Try to find a preferred model
+                for pattern in preferred_patterns:
+                    for name in model_names:
+                        if pattern in name.lower():
+                            logger.info("Auto-selected model: %s (preferred pattern: %s)", name, pattern)
+                            return name
+
+                # Fall back to first model if no preferred found
+                logger.info("Auto-selected first available model: %s", models[0].name)
                 return models[0].name
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to auto-detect Ollama model: %s", e)
 
         raise LLMError(
             "No Ollama model configured. Set REOS_OLLAMA_MODEL or pull a model."

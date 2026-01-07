@@ -62,6 +62,7 @@ from .play_fs import set_active_act_id as play_set_active_act_id
 from .play_fs import update_act as play_update_act
 from .play_fs import update_beat as play_update_beat
 from .play_fs import update_scene as play_update_scene
+from .play_fs import assign_repo_to_act as play_assign_repo_to_act
 from .context_meter import calculate_context_stats, estimate_tokens
 from .knowledge_store import KnowledgeStore
 from .compact_extractor import extract_knowledge_from_messages, generate_archive_summary
@@ -192,6 +193,15 @@ def _handle_tools_call(db: Database, *, name: str, arguments: dict[str, Any] | N
         # -32602: invalid params
         code = -32602 if exc.code in {"invalid_args", "path_escape"} else -32000
         raise RpcError(code=code, message=exc.message, data=exc.data) from exc
+
+
+def _slugify(text: str) -> str:
+    """Convert text to a URL-safe slug."""
+    import re
+    slug = text.lower().strip()
+    slug = re.sub(r'[^\w\s-]', '', slug)
+    slug = re.sub(r'[\s_-]+', '-', slug)
+    return slug[:50]  # Limit length
 
 
 def _handle_chat_respond(
@@ -536,6 +546,10 @@ _active_executions: dict[str, Any] = {}
 _active_code_executions: dict[str, Any] = {}
 _code_exec_lock = threading.Lock()
 
+# Store active Code Mode planning contexts (pre-approval phase)
+_active_code_plans: dict[str, Any] = {}
+_code_plan_lock = threading.Lock()
+
 
 def _get_reasoning_engine(conversation_id: str, db: Database) -> Any:
     """Get or create a reasoning engine for a conversation."""
@@ -636,27 +650,72 @@ def _handle_execution_status(
     *,
     execution_id: str,
 ) -> dict[str, Any]:
-    """Get the status of an execution."""
+    """Get the status of an execution.
+
+    Checks both _active_executions (reasoning engine) and _active_code_executions
+    (Code Mode streaming) for the execution ID.
+    """
+    # First check reasoning engine executions
     context = _active_executions.get(execution_id)
 
-    if not context:
-        raise RpcError(code=-32602, message=f"Execution not found: {execution_id}")
+    if context:
+        completed_steps = []
+        for step_id, result in context.step_results.items():
+            completed_steps.append({
+                "step_id": step_id,
+                "success": result.success,
+                "output_preview": result.output[:200] if result.output else "",
+            })
 
-    completed_steps = []
-    for step_id, result in context.step_results.items():
-        completed_steps.append({
-            "step_id": step_id,
-            "success": result.success,
-            "output_preview": result.output[:200] if result.output else "",
-        })
+        return {
+            "execution_id": execution_id,
+            "state": context.state.value if hasattr(context.state, 'value') else str(context.state),
+            "current_step": context.plan.current_step_index if context.plan else 0,
+            "total_steps": len(context.plan.steps) if context.plan else 0,
+            "completed_steps": completed_steps,
+        }
 
-    return {
-        "execution_id": execution_id,
-        "state": context.state.value if hasattr(context.state, 'value') else str(context.state),
-        "current_step": context.plan.current_step_index if context.plan else 0,
-        "total_steps": len(context.plan.steps) if context.plan else 0,
-        "completed_steps": completed_steps,
-    }
+    # Fall through to Code Mode streaming executions
+    with _code_exec_lock:
+        code_context = _active_code_executions.get(execution_id)
+
+    if code_context:
+        # Convert CodeExecutionContext to ExecutionStatusResult format
+        state = code_context.state
+        completed_steps = []
+
+        # Build completed steps from the state
+        if state and state.steps_completed > 0:
+            for i in range(state.steps_completed):
+                completed_steps.append({
+                    "step_id": f"step-{i}",
+                    "success": True,
+                    "output_preview": "",
+                })
+
+        # Map phase to state value
+        exec_state = "running"
+        if code_context.is_complete:
+            exec_state = "completed" if (state and state.success) else "failed"
+        elif state:
+            exec_state = state.status
+
+        return {
+            "execution_id": execution_id,
+            "state": exec_state,
+            "current_step": state.steps_completed if state else 0,
+            "total_steps": state.steps_total if state else 0,
+            "completed_steps": completed_steps,
+            # Extra fields for richer UI (optional)
+            "phase": state.phase if state else None,
+            "phase_description": state.phase_description if state else None,
+            "output_lines": state.output_lines if state else [],
+            "is_complete": code_context.is_complete,
+            "success": state.success if state else None,
+            "error": code_context.error,
+        }
+
+    raise RpcError(code=-32602, message=f"Execution not found: {execution_id}")
 
 
 def _handle_execution_pause(
@@ -1070,13 +1129,30 @@ def _handle_execution_kill(
     *,
     execution_id: str,
 ) -> dict[str, Any]:
-    """Kill a running execution."""
+    """Kill a running execution.
+
+    Checks both streaming executor and Code Mode executions.
+    """
+    # First try streaming executor
     from .streaming_executor import get_streaming_executor
 
     executor = get_streaming_executor()
     killed = executor.kill(execution_id)
 
-    return {"ok": killed, "message": "Execution killed" if killed else "Execution not found or already complete"}
+    if killed:
+        return {"ok": True, "message": "Execution killed"}
+
+    # Fall through to Code Mode executions
+    with _code_exec_lock:
+        code_context = _active_code_executions.get(execution_id)
+
+    if code_context:
+        if code_context.is_complete:
+            return {"ok": False, "message": "Execution already complete"}
+        code_context.request_cancel()
+        return {"ok": True, "message": "Cancellation requested"}
+
+    return {"ok": False, "message": "Execution not found or already complete"}
 
 
 # -------------------------------------------------------------------------
@@ -1104,7 +1180,7 @@ def _handle_code_exec_start(
         ExecutionObserver,
         create_execution_context,
     )
-    from .play_fs import load_play
+    from .play_fs import list_acts
 
     # Create execution context
     context = create_execution_context(
@@ -1127,16 +1203,16 @@ def _handle_code_exec_start(
         stored_model = db.get_state("ollama_model")
         if stored_url and stored_model:
             ollama = OllamaClient(base_url=stored_url, model=stored_model)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to initialize Ollama client for code execution: %s", e)
 
     # Get project memory if available
     project_memory = None
     try:
         from .code_mode.project_memory import ProjectMemoryStore
         project_memory = ProjectMemoryStore(db=db)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to initialize project memory: %s", e)
 
     executor = CodeExecutor(
         sandbox=sandbox,
@@ -1146,8 +1222,8 @@ def _handle_code_exec_start(
     )
 
     # Load the Act for context
-    play = load_play(db)
-    act = play.get_active_act()
+    acts, active_id = list_acts()
+    act = next((a for a in acts if a.act_id == active_id), None) if active_id else None
 
     def run_execution() -> None:
         """Run the execution in background thread."""
@@ -1179,6 +1255,186 @@ def _handle_code_exec_start(
         "execution_id": context.execution_id,
         "session_id": session_id,
         "status": "started",
+    }
+
+
+def _handle_code_plan_approve(
+    db: Database,
+    *,
+    conversation_id: str,
+    plan_id: str | None = None,
+) -> dict[str, Any]:
+    """Approve and execute a pending Code Mode plan with streaming.
+
+    Gets the pending code plan from the database and starts streaming
+    execution that the frontend can poll.
+
+    Returns:
+        Dict with execution_id for polling code/exec/state
+    """
+    import json
+    from pathlib import Path
+    from .code_mode import (
+        CodeSandbox,
+        CodeExecutor,
+        ExecutionObserver,
+        create_execution_context,
+    )
+    from .code_mode.planner import (
+        CodeTaskPlan,
+        CodeStep,
+        CodeStepType,
+        ImpactLevel,
+    )
+    from .play_fs import list_acts
+
+    # Get the pending code plan from database
+    plan_json = db.get_state(key="pending_code_plan_json")
+    if not plan_json:
+        raise RpcError(code=-32602, message="No pending code plan to approve")
+
+    try:
+        plan_data = json.loads(plan_json)
+    except json.JSONDecodeError as e:
+        raise RpcError(code=-32602, message=f"Invalid plan data: {e}")
+
+    # Reconstruct the CodeTaskPlan from stored JSON
+    plan_context = None
+    try:
+        steps = []
+        for step_data in plan_data.get("steps", []):
+            step_type_str = step_data.get("type", "write_file")
+            try:
+                step_type = CodeStepType(step_type_str)
+            except ValueError:
+                step_type = CodeStepType.WRITE_FILE
+
+            steps.append(CodeStep(
+                id=step_data.get("id", f"step-{len(steps)}"),
+                type=step_type,
+                description=step_data.get("description", ""),
+                target_path=step_data.get("target_path"),
+            ))
+
+        impact_str = plan_data.get("estimated_impact", "minor")
+        try:
+            impact = ImpactLevel(impact_str)
+        except ValueError:
+            impact = ImpactLevel.MINOR
+
+        plan_context = CodeTaskPlan(
+            id=plan_data.get("id", "plan-unknown"),
+            goal=plan_data.get("goal", ""),
+            steps=steps,
+            context_files=plan_data.get("context_files", []),
+            files_to_modify=plan_data.get("files_to_modify", []),
+            files_to_create=plan_data.get("files_to_create", []),
+            files_to_delete=plan_data.get("files_to_delete", []),
+            estimated_impact=impact,
+        )
+    except Exception as e:
+        logger.warning("Could not reconstruct plan context: %s", e)
+        # Continue without plan context - will discover from scratch
+
+    # Clear the pending plan
+    db.set_state(key="pending_code_plan_json", value="")
+
+    # Get the active Act with repo
+    acts, active_act_id = list_acts()
+    act = None
+    if active_act_id:
+        for a in acts:
+            if a.act_id == active_act_id:
+                act = a
+                break
+
+    if not act:
+        raise RpcError(code=-32602, message="No active Act found")
+
+    if not act.repo_path:
+        raise RpcError(code=-32602, message="Active Act has no repository assigned")
+
+    repo_path = act.repo_path
+    prompt = plan_data.get("goal", "Execute code plan")
+    session_id = conversation_id
+
+    # Create execution context
+    context = create_execution_context(
+        session_id=session_id,
+        prompt=prompt,
+        max_iterations=10,
+    )
+
+    # Create observer that updates the context
+    observer = ExecutionObserver(context)
+
+    # Create sandbox and executor
+    sandbox = CodeSandbox(Path(repo_path))
+
+    # Get LLM provider
+    llm = None
+    try:
+        from .providers import get_provider
+        llm = get_provider(db)
+    except Exception as e:
+        logger.warning("Failed to get LLM provider, falling back to Ollama: %s", e)
+        # Fall back to Ollama
+        try:
+            from .ollama import OllamaClient
+            stored_url = db.get_state("ollama_url")
+            stored_model = db.get_state("ollama_model")
+            if stored_url and stored_model:
+                llm = OllamaClient(base_url=stored_url, model=stored_model)
+        except Exception as e2:
+            logger.error("Failed to initialize Ollama fallback: %s", e2)
+
+    # Get project memory if available
+    project_memory = None
+    try:
+        from .code_mode.project_memory import ProjectMemoryStore
+        project_memory = ProjectMemoryStore(db=db)
+    except Exception as e:
+        logger.warning("Failed to initialize project memory: %s", e)
+
+    executor = CodeExecutor(
+        sandbox=sandbox,
+        llm=llm,
+        project_memory=project_memory,
+        observer=observer,
+    )
+
+    def run_execution() -> None:
+        """Run the execution in background thread."""
+        try:
+            result = executor.execute(
+                prompt=prompt,
+                act=act,
+                max_iterations=10,
+                auto_approve=True,
+                plan_context=plan_context,  # Reuse plan's analysis!
+            )
+            context.result = result
+            context.is_complete = True
+        except Exception as e:
+            context.error = str(e)
+            context.is_complete = True
+            observer.on_error(str(e))
+
+    # Start background thread
+    thread = threading.Thread(target=run_execution, daemon=True)
+    context.thread = thread
+
+    # Track the execution
+    with _code_exec_lock:
+        _active_code_executions[context.execution_id] = context
+
+    thread.start()
+
+    return {
+        "execution_id": context.execution_id,
+        "session_id": session_id,
+        "status": "started",
+        "prompt": prompt,
     }
 
 
@@ -1284,6 +1540,383 @@ def _handle_code_exec_cleanup(
 
 
 # -------------------------------------------------------------------------
+# Code Mode Session Logs (for debugging)
+# -------------------------------------------------------------------------
+
+
+def _handle_code_sessions_list(
+    db: Database,
+    *,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """List recent Code Mode sessions with their log files.
+
+    Returns:
+        Dict with list of session summaries.
+    """
+    from .code_mode.session_logger import list_sessions
+
+    sessions = list_sessions(limit=limit)
+    return {
+        "sessions": sessions,
+        "count": len(sessions),
+    }
+
+
+def _handle_code_sessions_get(
+    db: Database,
+    *,
+    session_id: str,
+) -> dict[str, Any]:
+    """Get full session log for a specific session.
+
+    Args:
+        session_id: The session ID to retrieve (can be partial).
+
+    Returns:
+        Dict with full session data including all log entries.
+    """
+    from .code_mode.session_logger import get_session_log
+
+    session = get_session_log(session_id)
+    if not session:
+        raise RpcError(code=-32602, message=f"Session not found: {session_id}")
+
+    return session
+
+
+def _handle_code_sessions_raw(
+    db: Database,
+    *,
+    session_id: str,
+) -> dict[str, Any]:
+    """Get raw log file content for a session.
+
+    Args:
+        session_id: The session ID to retrieve.
+
+    Returns:
+        Dict with raw_log text content.
+    """
+    from .code_mode.session_logger import get_session_log
+
+    session = get_session_log(session_id)
+    if not session:
+        raise RpcError(code=-32602, message=f"Session not found: {session_id}")
+
+    return {
+        "session_id": session.get("session_id"),
+        "raw_log": session.get("raw_log", ""),
+    }
+
+
+# -------------------------------------------------------------------------
+# Code Mode Planning handlers (Pre-approval streaming)
+# -------------------------------------------------------------------------
+
+
+def _handle_code_plan_start(
+    db: Database,
+    *,
+    prompt: str,
+    conversation_id: str,
+    act_id: str | None = None,
+) -> dict[str, Any]:
+    """Start Code Mode planning in background thread.
+
+    This starts intent discovery and contract building asynchronously,
+    allowing the frontend to poll for progress.
+
+    Returns:
+        Dict with planning_id for polling code/plan/state
+    """
+    from pathlib import Path
+    from .code_mode.streaming import (
+        create_planning_context,
+        PlanningObserver,
+        PlanningCancelledError,
+    )
+    from .code_mode.intent import IntentDiscoverer
+    from .code_mode.contract import ContractBuilder
+    from .code_mode import CodeSandbox, CodePlanner
+    from .providers import get_provider, check_provider_health
+    from .play_fs import list_acts
+
+    # Get the active act
+    active_act = None
+    acts, active_act_id = list_acts()
+
+    # Use provided act_id or fall back to active_act_id
+    target_act_id = act_id or active_act_id
+    if target_act_id:
+        for act in acts:
+            if act.act_id == target_act_id:
+                active_act = act
+                break
+
+    if not active_act or not active_act.repo_path:
+        raise RpcError(
+            code=-32602,
+            message="No active Act with repository. Please set up an Act first."
+        )
+
+    # Check LLM health
+    health = check_provider_health(db)
+    if not health.reachable:
+        raise RpcError(
+            code=-32603,
+            message=f"Cannot connect to LLM provider: {health.error or 'Unknown error'}"
+        )
+
+    # Create planning context
+    context = create_planning_context(prompt)
+    observer = PlanningObserver(context)
+
+    def run_planning() -> None:
+        """Background planning thread."""
+        try:
+            repo_path = Path(active_act.repo_path)  # type: ignore
+            sandbox = CodeSandbox(repo_path)
+            llm = get_provider(db)
+
+            # Phase 1: Intent Discovery
+            # Set phase to "analyzing_prompt" which maps to "intent" in UI
+            observer.on_phase_change("analyzing_prompt")
+            observer.on_activity("Starting intent discovery...")
+            intent_discoverer = IntentDiscoverer(
+                sandbox=sandbox,
+                llm=llm,
+                observer=observer,
+            )
+
+            # The discover() method handles all the sub-activities
+            discovered_intent = intent_discoverer.discover(prompt, active_act)
+            observer.on_activity(f"Intent discovered: {discovered_intent.goal[:50]}...")
+
+            # Phase 2: Contract Building
+            # Set phase to "generating_criteria" which maps to "contract" in UI
+            observer.on_phase_change("generating_criteria")
+            observer.on_activity("Building acceptance contract...")
+            contract_builder = ContractBuilder(
+                sandbox=sandbox,
+                llm=llm,
+                observer=observer,
+            )
+
+            contract = contract_builder.build_from_intent(discovered_intent)
+            observer.on_activity(f"Contract built with {len(contract.acceptance_criteria)} criteria")
+
+            # Phase 3: Create CodeTaskPlan
+            # Set phase to "decomposing" which maps to "decompose" in UI
+            observer.on_phase_change("decomposing")
+            observer.on_activity("Generating execution plan...")
+            planner = CodePlanner(sandbox=sandbox, llm=llm)
+            plan = planner.create_plan(request=prompt, act=active_act)
+            observer.on_activity(f"Plan created with {len(plan.steps)} steps")
+
+            # Store result
+            context.result = {
+                "intent": discovered_intent,
+                "contract": contract,
+                "plan": plan,
+            }
+
+            # Planning complete - waiting for user approval
+            observer.on_phase_change("ready")  # Maps to "approval" in UI
+            observer.on_activity("Plan ready for your approval")
+            context.update_state(
+                is_complete=True,
+                success=True,
+                intent_summary=discovered_intent.goal,
+                contract_summary=contract.summary(),
+                ambiguities=discovered_intent.ambiguities,
+                assumptions=discovered_intent.assumptions,
+            )
+            context.is_complete = True
+
+        except PlanningCancelledError:
+            context.error = "Planning cancelled by user"
+            context.is_complete = True
+            observer.on_phase_change("failed")
+            context.update_state(
+                is_complete=True,
+                success=False,
+                error="Cancelled by user",
+            )
+
+        except Exception as e:
+            logger.exception("Planning failed: %s", e)
+            context.error = str(e)
+            context.is_complete = True
+            observer.on_phase_change("failed")
+            context.update_state(
+                is_complete=True,
+                success=False,
+                error=str(e),
+            )
+
+    # Start planning thread
+    thread = threading.Thread(target=run_planning, daemon=True)
+    context.thread = thread
+
+    # Store context
+    with _code_plan_lock:
+        _active_code_plans[context.planning_id] = context
+
+    thread.start()
+
+    return {
+        "planning_id": context.planning_id,
+        "status": "started",
+        "prompt": prompt,
+    }
+
+
+def _handle_code_plan_state(
+    db: Database,
+    *,
+    planning_id: str,
+) -> dict[str, Any]:
+    """Get the current state of a Code Mode planning session."""
+    with _code_plan_lock:
+        context = _active_code_plans.get(planning_id)
+
+    if not context:
+        raise RpcError(code=-32602, message=f"Planning session not found: {planning_id}")
+
+    # Return serialized state
+    if context.state:
+        return context.state.to_dict()
+
+    # Fallback
+    return {
+        "planning_id": planning_id,
+        "phase": "unknown",
+        "is_complete": context.is_complete,
+        "error": context.error,
+        "activity_log": [],
+    }
+
+
+def _handle_code_plan_cancel(
+    db: Database,
+    *,
+    planning_id: str,
+) -> dict[str, Any]:
+    """Cancel a running Code Mode planning session."""
+    with _code_plan_lock:
+        context = _active_code_plans.get(planning_id)
+
+    if not context:
+        raise RpcError(code=-32602, message=f"Planning session not found: {planning_id}")
+
+    if context.is_complete:
+        return {"ok": False, "message": "Planning already complete"}
+
+    # Request cancellation
+    context.request_cancel()
+
+    return {"ok": True, "message": "Cancellation requested"}
+
+
+def _handle_code_plan_result(
+    db: Database,
+    *,
+    planning_id: str,
+    conversation_id: str,
+) -> dict[str, Any]:
+    """Get the final result of a completed planning session.
+
+    This returns the full plan/contract for display and approval.
+    """
+    from .agent import _generate_id
+
+    with _code_plan_lock:
+        context = _active_code_plans.get(planning_id)
+
+    if not context:
+        raise RpcError(code=-32602, message=f"Planning session not found: {planning_id}")
+
+    if not context.is_complete:
+        raise RpcError(code=-32602, message="Planning not yet complete")
+
+    if context.error:
+        return {
+            "success": False,
+            "error": context.error,
+        }
+
+    result = context.result
+    if not result:
+        return {
+            "success": False,
+            "error": "No result available",
+        }
+
+    intent = result["intent"]
+    contract = result["contract"]
+    plan = result["plan"]
+
+    # Build response text (same format as _handle_code_mode in agent.py)
+    thinking_log = ""
+    if intent.discovery_steps:
+        thinking_log = "\n### What ReOS understood:\n"
+        for step in intent.discovery_steps[:8]:
+            thinking_log += f"- {step}\n"
+
+    clarifications = ""
+    if intent.ambiguities:
+        clarifications = "\n### Clarification needed:\n"
+        for ambiguity in intent.ambiguities:
+            clarifications += f"- ❓ {ambiguity}\n"
+
+    assumptions = ""
+    if intent.assumptions:
+        assumptions = "\n### Assumptions:\n"
+        for assumption in intent.assumptions:
+            assumptions += f"- 💭 {assumption}\n"
+
+    contract_summary = contract.summary()
+
+    response_text = (
+        f"**Code Mode Active** (repo: `{plan.repo_path if hasattr(plan, 'repo_path') else 'unknown'}`)\n"
+        f"{thinking_log}"
+        f"\n{contract_summary}\n"
+        f"{clarifications}{assumptions}\n"
+        f"Do you want me to proceed? (yes/no)"
+    )
+
+    # Store pending plan for approval flow
+    import json
+    db.set_state(key="pending_code_plan_json", value=json.dumps(plan.to_dict()))
+    db.set_state(key="pending_code_plan_id", value=plan.id)
+
+    # Store message
+    message_id = _generate_id() if callable(_generate_id) else f"msg-{planning_id}"
+    db.add_message(
+        message_id=message_id,
+        conversation_id=conversation_id,
+        role="assistant",
+        content=response_text,
+        message_type="code_plan_preview",
+        metadata=json.dumps({
+            "code_mode": True,
+            "plan_id": plan.id,
+            "contract_id": contract.id,
+            "intent_goal": intent.goal,
+        }),
+    )
+
+    return {
+        "success": True,
+        "response_text": response_text,
+        "message_id": message_id,
+        "plan_id": plan.id,
+        "contract_id": contract.id,
+    }
+
+
+# -------------------------------------------------------------------------
 # System Dashboard handlers (Phase 5)
 # -------------------------------------------------------------------------
 
@@ -1322,8 +1955,9 @@ def _handle_system_live_state(db: Database) -> dict[str, Any]:
             }
         ]
         result["load_avg"] = info.get("load_avg", [0.0, 0.0, 0.0])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get system info: %s", e)
+        result["_errors"] = result.get("_errors", []) + ["system_info"]
 
     # Get services (top 10 most relevant)
     try:
@@ -1341,8 +1975,9 @@ def _handle_system_live_state(db: Database) -> dict[str, Any]:
             }
             for s in sorted_services
         ]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to list services: %s", e)
+        result["_errors"] = result.get("_errors", []) + ["services"]
 
     # Get containers if Docker is available
     try:
@@ -1357,8 +1992,9 @@ def _handle_system_live_state(db: Database) -> dict[str, Any]:
             }
             for c in containers[:10]
         ]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to list containers (Docker may not be available): %s", e)
+        # Don't add to errors - Docker being unavailable is normal
 
     # Get network interfaces
     try:
@@ -1372,8 +2008,9 @@ def _handle_system_live_state(db: Database) -> dict[str, Any]:
                 }
                 for iface in network["interfaces"][:5]
             ]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get network info: %s", e)
+        result["_errors"] = result.get("_errors", []) + ["network"]
 
     # Get listening ports
     try:
@@ -1388,8 +2025,9 @@ def _handle_system_live_state(db: Database) -> dict[str, Any]:
             }
             for p in ports[:20]  # Limit to 20 ports
         ]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to list listening ports: %s", e)
+        result["_errors"] = result.get("_errors", []) + ["ports"]
 
     # Get network traffic
     try:
@@ -1404,8 +2042,9 @@ def _handle_system_live_state(db: Database) -> dict[str, Any]:
             }
             for t in traffic
         ]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get network traffic: %s", e)
+        result["_errors"] = result.get("_errors", []) + ["traffic"]
 
     return result
 
@@ -1634,8 +2273,8 @@ def _detect_system_hardware() -> dict[str, Any]:
                     kb = int(line.split()[1])
                     result["ram_gb"] = round(kb / 1024 / 1024, 1)
                     break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to detect RAM from /proc/meminfo: %s", e)
 
     # Detect NVIDIA GPU
     try:
@@ -1652,8 +2291,10 @@ def _detect_system_hardware() -> dict[str, Any]:
                     result["gpu_type"] = "nvidia"
                     result["gpu_name"] = parts[0].strip()
                     result["gpu_vram_gb"] = round(int(parts[1]) / 1024, 1)
-    except Exception:
-        pass
+    except FileNotFoundError:
+        logger.debug("nvidia-smi not found - no NVIDIA GPU detected")
+    except Exception as e:
+        logger.debug("Failed to detect NVIDIA GPU: %s", e)
 
     # Detect AMD GPU (ROCm)
     if not result["gpu_available"]:
@@ -1672,10 +2313,12 @@ def _detect_system_hardware() -> dict[str, Any]:
                         try:
                             mb = int("".join(filter(str.isdigit, line.split("Total")[1].split("MB")[0])))
                             result["gpu_vram_gb"] = round(mb / 1024, 1)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+                        except (ValueError, IndexError) as e:
+                            logger.debug("Failed to parse ROCm VRAM: %s", e)
+        except FileNotFoundError:
+            logger.debug("rocm-smi not found - no AMD GPU detected")
+        except Exception as e:
+            logger.debug("Failed to detect AMD GPU: %s", e)
 
     # Calculate recommended max parameters based on available memory
     # Use the larger of GPU VRAM (for fast inference) or RAM (for CPU offloading)
@@ -1741,8 +2384,8 @@ def _handle_ollama_status(db: Database) -> dict[str, Any]:
     if health.reachable:
         try:
             models = list_ollama_models(url=url)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to list Ollama models: %s", e)
 
     # Get hardware info
     hardware = _detect_system_hardware()
@@ -1844,8 +2487,8 @@ def _handle_ollama_model_info(db: Database, *, model: str) -> dict[str, Any]:
                     if "num_ctx" in line:
                         try:
                             context_length = int(line.split()[-1])
-                        except Exception:
-                            pass
+                        except (ValueError, IndexError) as e:
+                            logger.debug("Failed to parse num_ctx from model parameters: %s", e)
 
             # Default context lengths by model family
             if context_length is None:
@@ -2284,7 +2927,7 @@ def _handle_play_acts_list(_db: Database) -> dict[str, Any]:
     return {
         "active_act_id": active_id,
         "acts": [
-            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes}
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes, "repo_path": a.repo_path}
             for a in acts
         ],
     }
@@ -2299,7 +2942,7 @@ def _handle_play_acts_set_active(_db: Database, *, act_id: str | None) -> dict[s
     return {
         "active_act_id": active_id,
         "acts": [
-            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes}
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes, "repo_path": a.repo_path}
             for a in acts
         ],
     }
@@ -2346,7 +2989,7 @@ def _handle_play_acts_create(_db: Database, *, title: str, notes: str | None = N
     return {
         "created_act_id": created_id,
         "acts": [
-            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes}
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes, "repo_path": a.repo_path}
             for a in acts
         ],
     }
@@ -2366,7 +3009,49 @@ def _handle_play_acts_update(
     return {
         "active_act_id": active_id,
         "acts": [
-            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes}
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes, "repo_path": a.repo_path}
+            for a in acts
+        ],
+    }
+
+
+def _handle_play_acts_assign_repo(
+    _db: Database,
+    *,
+    act_id: str,
+    repo_path: str,
+) -> dict[str, Any]:
+    """Assign a repository path to an act. Creates the directory if it doesn't exist."""
+    from pathlib import Path
+    import subprocess
+
+    path = Path(repo_path).expanduser().resolve()
+
+    # Create directory if it doesn't exist
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+
+    # Initialize git repo if not already a git repo
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        subprocess.run(["git", "init"], cwd=str(path), capture_output=True, check=True)
+        # Create initial commit to have a valid repo
+        readme = path / "README.md"
+        if not readme.exists():
+            readme.write_text(f"# Project\n\nCreated by ReOS\n")
+        subprocess.run(["git", "add", "."], cwd=str(path), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=str(path), capture_output=True, check=True)
+
+    try:
+        acts, _active_id = play_assign_repo_to_act(act_id=act_id, repo_path=str(path))
+    except ValueError as exc:
+        raise RpcError(code=-32602, message=str(exc)) from exc
+
+    return {
+        "success": True,
+        "repo_path": str(path),
+        "acts": [
+            {"act_id": a.act_id, "title": a.title, "active": bool(a.active), "notes": a.notes, "repo_path": a.repo_path}
             for a in acts
         ],
     }
@@ -2719,8 +3404,8 @@ def _handle_context_stats(
         collector = SteadyStateCollector()
         state = collector.refresh_if_stale(max_age_seconds=3600)
         system_state = state.to_context_string()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get system state for context stats: %s", e)
 
     # Get system prompt from persona
     system_prompt = ""
@@ -2733,15 +3418,16 @@ def _handle_context_stats(
         if not system_prompt:
             # Default system prompt estimate
             system_prompt = "x" * 8000  # ~2000 tokens
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to get persona for context stats: %s", e)
         system_prompt = "x" * 8000
 
     # Get play context
     play_context = ""
     try:
         play_context = play_read_me_markdown()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get play context for context stats: %s", e)
 
     # Get context limit from model settings if not provided
     if context_limit is None:
@@ -3632,6 +4318,20 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
                 raise RpcError(code=-32602, message="act_id must be a non-empty string or null")
             return _jsonrpc_result(req_id=req_id, result=_handle_play_acts_set_active(db, act_id=act_id))
 
+        if method == "play/acts/assign_repo":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            act_id = params.get("act_id")
+            repo_path = params.get("repo_path")
+            if not isinstance(act_id, str) or not act_id:
+                raise RpcError(code=-32602, message="act_id is required")
+            if not isinstance(repo_path, str) or not repo_path.strip():
+                raise RpcError(code=-32602, message="repo_path is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_play_acts_assign_repo(db, act_id=act_id, repo_path=repo_path),
+            )
+
         if method == "play/scenes/list":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
@@ -4351,6 +5051,22 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
                 ),
             )
 
+        if method == "code/plan/approve":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            conversation_id = params.get("conversation_id")
+            plan_id = params.get("plan_id")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise RpcError(code=-32602, message="conversation_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_plan_approve(
+                    db,
+                    conversation_id=conversation_id,
+                    plan_id=plan_id,
+                ),
+            )
+
         if method == "code/exec/state":
             if not isinstance(params, dict):
                 raise RpcError(code=-32602, message="params must be an object")
@@ -4386,6 +5102,105 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
             return _jsonrpc_result(
                 req_id=req_id,
                 result=_handle_code_exec_cleanup(db, execution_id=execution_id),
+            )
+
+        # -------------------------------------------------------------------------
+        # Code Mode Session Logs (for debugging)
+        # -------------------------------------------------------------------------
+
+        if method == "code/sessions/list":
+            if not isinstance(params, dict):
+                params = {}
+            limit = params.get("limit", 20)
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_sessions_list(db, limit=limit),
+            )
+
+        if method == "code/sessions/get":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_id = params.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise RpcError(code=-32602, message="session_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_sessions_get(db, session_id=session_id),
+            )
+
+        if method == "code/sessions/raw":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            session_id = params.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise RpcError(code=-32602, message="session_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_sessions_raw(db, session_id=session_id),
+            )
+
+        # -------------------------------------------------------------------------
+        # Code Mode Planning (Pre-approval streaming)
+        # -------------------------------------------------------------------------
+
+        if method == "code/plan/start":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            prompt = params.get("prompt")
+            conversation_id = params.get("conversation_id")
+            act_id = params.get("act_id")
+            if not isinstance(prompt, str) or not prompt:
+                raise RpcError(code=-32602, message="prompt is required")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise RpcError(code=-32602, message="conversation_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_plan_start(
+                    db,
+                    prompt=prompt,
+                    conversation_id=conversation_id,
+                    act_id=act_id,
+                ),
+            )
+
+        if method == "code/plan/state":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            planning_id = params.get("planning_id")
+            if not isinstance(planning_id, str) or not planning_id:
+                raise RpcError(code=-32602, message="planning_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_plan_state(db, planning_id=planning_id),
+            )
+
+        if method == "code/plan/cancel":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            planning_id = params.get("planning_id")
+            if not isinstance(planning_id, str) or not planning_id:
+                raise RpcError(code=-32602, message="planning_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_plan_cancel(db, planning_id=planning_id),
+            )
+
+        if method == "code/plan/result":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            planning_id = params.get("planning_id")
+            conversation_id = params.get("conversation_id")
+            if not isinstance(planning_id, str) or not planning_id:
+                raise RpcError(code=-32602, message="planning_id is required")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise RpcError(code=-32602, message="conversation_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_code_plan_result(
+                    db,
+                    planning_id=planning_id,
+                    conversation_id=conversation_id,
+                ),
             )
 
         raise RpcError(code=-32601, message=f"Method not found: {method}")

@@ -1,8 +1,13 @@
-"""Streaming - real-time execution state for UI.
+"""Streaming - real-time state for UI during planning and execution.
 
-Provides infrastructure for streaming Code Mode execution state to the
-Tauri frontend. Users can watch the AI work through phases, see live
-test output, and cancel if needed.
+Provides infrastructure for streaming Code Mode state to the Tauri frontend.
+Users can watch the AI work through phases, see live progress, and cancel if needed.
+
+TWO PHASES:
+1. PLANNING PHASE - Intent discovery + contract building (before user approval)
+2. EXECUTION PHASE - Actually running the steps (after user approval)
+
+Both phases support real-time progress updates via polling.
 
 Transparency builds trust.
 """
@@ -229,6 +234,29 @@ class ExecutionObserver:
         self.context = context
         self._start_time = datetime.now(timezone.utc)
 
+    def on_activity(self, message: str, module: str | None = None) -> None:
+        """Called when a sub-activity happens within a phase.
+
+        This provides fine-grained progress updates so users see what's
+        happening every few seconds, not just phase transitions.
+
+        Args:
+            message: Description of the current activity.
+            module: Optional module name (e.g., "IntentDiscoverer", "ContractBuilder").
+        """
+        if module:
+            self.context.add_output(f"[{module}] {message}")
+        else:
+            self.context.add_output(f"  ▸ {message}")
+
+        self.context.update_state(
+            elapsed_seconds=self._elapsed_seconds(),
+        )
+
+        # Check for cancellation
+        if self.context.should_cancel():
+            raise ExecutionCancelledError("Execution cancelled by user")
+
     def on_phase_change(self, status: LoopStatus) -> None:
         """Called when execution phase changes.
 
@@ -246,6 +274,8 @@ class ExecutionObserver:
             phase_index=phase_index,
             elapsed_seconds=self._elapsed_seconds(),
         )
+
+        self.context.add_output(f"◆ {phase_name}: {phase_desc}")
 
         # Check for cancellation
         if self.context.should_cancel():
@@ -572,5 +602,225 @@ def create_execution_context(
 
     return CodeExecutionContext(
         execution_id=execution_id,
+        state=initial_state,
+    )
+
+
+# =============================================================================
+# Planning Phase State (Pre-Approval)
+# =============================================================================
+
+
+PLANNING_PHASES = {
+    "starting": (0, "Starting", "Initializing Code Mode..."),
+    "analyzing_prompt": (1, "Analyzing", "Understanding your request..."),
+    "reading_context": (2, "Context", "Reading project context..."),
+    "scanning_codebase": (3, "Scanning", "Finding relevant files..."),
+    "synthesizing": (4, "Synthesizing", "Building unified understanding..."),
+    "generating_criteria": (5, "Criteria", "Defining acceptance criteria..."),
+    "decomposing": (6, "Planning", "Breaking into steps..."),
+    "complete": (7, "Ready", "Plan ready for approval"),
+    "failed": (7, "Failed", "Planning failed"),
+}
+
+
+@dataclass
+class PlanningStateSnapshot:
+    """JSON-serializable snapshot of planning state.
+
+    This is what gets sent to the frontend during the planning phase
+    (before user approval).
+    """
+
+    planning_id: str
+    prompt: str
+
+    # Phase tracking
+    phase: str  # Key from PLANNING_PHASES
+    phase_name: str  # Human name
+    phase_description: str  # e.g., "Understanding your request..."
+    phase_index: int  # 0-7 for progress bar
+
+    # Progress log - what ReOS is doing
+    activity_log: list[str] = field(default_factory=list)
+
+    # Completion
+    is_complete: bool = False
+    success: bool | None = None
+    error: str | None = None
+
+    # Result (when complete)
+    intent_summary: str = ""
+    contract_summary: str = ""
+    ambiguities: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+
+    # Timing
+    started_at: str = ""  # ISO format
+    elapsed_seconds: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to JSON-serializable dictionary."""
+        return {
+            "planning_id": self.planning_id,
+            "prompt": self.prompt,
+            "phase": self.phase,
+            "phase_name": self.phase_name,
+            "phase_description": self.phase_description,
+            "phase_index": self.phase_index,
+            "activity_log": self.activity_log,
+            "is_complete": self.is_complete,
+            "success": self.success,
+            "error": self.error,
+            "intent_summary": self.intent_summary,
+            "contract_summary": self.contract_summary,
+            "ambiguities": self.ambiguities,
+            "assumptions": self.assumptions,
+            "started_at": self.started_at,
+            "elapsed_seconds": self.elapsed_seconds,
+        }
+
+
+@dataclass
+class CodePlanningContext:
+    """Tracks a running planning phase on the server side.
+
+    This holds the thread running the planning, the current state snapshot,
+    and mechanisms for cancellation and output buffering.
+    """
+
+    planning_id: str
+    thread: threading.Thread | None = None
+    state: PlanningStateSnapshot | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    is_complete: bool = False
+    is_cancelled: bool = False
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+
+    result: Any = None  # The completed plan/contract when done
+    error: str | None = None
+
+    # Configuration
+    max_log_lines: int = 50
+
+    def add_activity(self, message: str) -> None:
+        """Add a line to the activity log (thread-safe, rolling)."""
+        with self.lock:
+            if self.state:
+                self.state.activity_log.append(message)
+                # Keep only last N lines
+                if len(self.state.activity_log) > self.max_log_lines:
+                    self.state.activity_log = self.state.activity_log[-self.max_log_lines:]
+
+    def get_activity_log(self) -> list[str]:
+        """Get current activity log (thread-safe)."""
+        with self.lock:
+            return list(self.state.activity_log) if self.state else []
+
+    def request_cancel(self) -> None:
+        """Request cancellation of the planning."""
+        self.is_cancelled = True
+        self.cancel_event.set()
+
+    def should_cancel(self) -> bool:
+        """Check if cancellation was requested."""
+        return self.is_cancelled or self.cancel_event.is_set()
+
+    def update_phase(self, phase: str) -> None:
+        """Update the planning phase (thread-safe)."""
+        with self.lock:
+            if self.state and phase in PLANNING_PHASES:
+                idx, name, desc = PLANNING_PHASES[phase]
+                self.state.phase = phase
+                self.state.phase_name = name
+                self.state.phase_description = desc
+                self.state.phase_index = idx
+
+    def update_state(self, **kwargs: Any) -> None:
+        """Update state snapshot fields (thread-safe)."""
+        with self.lock:
+            if self.state is not None:
+                for key, value in kwargs.items():
+                    if hasattr(self.state, key):
+                        setattr(self.state, key, value)
+
+
+class PlanningObserver:
+    """Observer that hooks into planning components to capture progress.
+
+    This is passed to IntentDiscoverer and ContractBuilder during the
+    planning phase (before execution).
+    """
+
+    def __init__(self, context: CodePlanningContext) -> None:
+        """Initialize observer with planning context."""
+        self.context = context
+        self._start_time = datetime.now(timezone.utc)
+
+    def on_activity(self, message: str, module: str | None = None) -> None:
+        """Called when a sub-activity happens.
+
+        Args:
+            message: Description of the current activity.
+            module: Optional module name.
+        """
+        if module:
+            self.context.add_activity(f"[{module}] {message}")
+        else:
+            self.context.add_activity(f"  ▸ {message}")
+
+        self.context.update_state(elapsed_seconds=self._elapsed_seconds())
+
+        # Check for cancellation
+        if self.context.should_cancel():
+            raise PlanningCancelledError("Planning cancelled by user")
+
+    def on_phase_change(self, phase: str) -> None:
+        """Called when planning phase changes."""
+        self.context.update_phase(phase)
+        if phase in PLANNING_PHASES:
+            _, name, desc = PLANNING_PHASES[phase]
+            self.context.add_activity(f"◆ {name}: {desc}")
+
+        # Check for cancellation
+        if self.context.should_cancel():
+            raise PlanningCancelledError("Planning cancelled by user")
+
+    def _elapsed_seconds(self) -> float:
+        """Calculate elapsed seconds since start."""
+        return (datetime.now(timezone.utc) - self._start_time).total_seconds()
+
+
+class PlanningCancelledError(Exception):
+    """Raised when planning is cancelled by user."""
+
+    pass
+
+
+def create_planning_context(prompt: str) -> CodePlanningContext:
+    """Create a new planning context with initial state.
+
+    Args:
+        prompt: The user's prompt.
+
+    Returns:
+        Initialized CodePlanningContext.
+    """
+    planning_id = f"plan-{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc)
+
+    initial_state = PlanningStateSnapshot(
+        planning_id=planning_id,
+        prompt=prompt,
+        phase="starting",
+        phase_name="Starting",
+        phase_description="Initializing Code Mode...",
+        phase_index=0,
+        started_at=now.isoformat(),
+    )
+
+    return CodePlanningContext(
+        planning_id=planning_id,
         state=initial_state,
     )

@@ -1,4 +1,4 @@
-"""Tests for IntentDiscoverer with RepoMap integration."""
+"""Tests for IntentDiscoverer."""
 
 from __future__ import annotations
 
@@ -14,10 +14,7 @@ from reos.code_mode.intent import (
     CodebaseIntent,
     DiscoveredIntent,
 )
-from reos.code_mode.repo_map import RepoMap
 from reos.code_mode.sandbox import CodeSandbox
-from reos.code_mode.symbol_extractor import Symbol, SymbolKind, Location
-from reos.db import Database
 
 
 @pytest.fixture
@@ -108,25 +105,9 @@ def test_run():
 
 
 @pytest.fixture
-def db() -> Database:
-    """Create an in-memory database."""
-    db = Database(":memory:")
-    db.migrate()
-    return db
-
-
-@pytest.fixture
 def sandbox(temp_repo: Path) -> CodeSandbox:
     """Create a CodeSandbox for the temp repo."""
     return CodeSandbox(temp_repo)
-
-
-@pytest.fixture
-def repo_map(sandbox: CodeSandbox, db: Database) -> RepoMap:
-    """Create an indexed RepoMap instance."""
-    rm = RepoMap(sandbox, db)
-    rm.index_repo()
-    return rm
 
 
 @pytest.fixture
@@ -136,25 +117,19 @@ def mock_act() -> MagicMock:
     act.title = "Build User Management"
     act.artifact_type = "feature"
     act.code_config = {"language": "python"}
+    act.repo_path = "/tmp/test"
     return act
 
 
 class TestIntentDiscovererBasic:
     """Tests for basic IntentDiscoverer functionality."""
 
-    def test_create_discoverer_without_repo_map(
+    def test_create_discoverer(
         self, sandbox: CodeSandbox
     ) -> None:
-        """Should create discoverer without RepoMap."""
+        """Should create discoverer."""
         discoverer = IntentDiscoverer(sandbox)
-        assert discoverer._repo_map is None
-
-    def test_create_discoverer_with_repo_map(
-        self, sandbox: CodeSandbox, repo_map: RepoMap
-    ) -> None:
-        """Should create discoverer with RepoMap."""
-        discoverer = IntentDiscoverer(sandbox, repo_map=repo_map)
-        assert discoverer._repo_map is repo_map
+        assert discoverer.sandbox is sandbox
 
     def test_discover_basic_intent(
         self, sandbox: CodeSandbox, mock_act: MagicMock
@@ -168,79 +143,11 @@ class TestIntentDiscovererBasic:
         assert intent.prompt_intent.target in ("function", "user")
 
 
-class TestIntentDiscovererWithRepoMap:
-    """Tests for IntentDiscoverer with RepoMap integration."""
-
-    def test_discover_with_repo_map(
-        self, sandbox: CodeSandbox, repo_map: RepoMap, mock_act: MagicMock
-    ) -> None:
-        """Should use RepoMap for enhanced context."""
-        discoverer = IntentDiscoverer(sandbox, repo_map=repo_map)
-        intent = discoverer.discover("update the User model", mock_act)
-
-        # Should find relevant symbols
-        assert intent.codebase_intent.symbol_context != ""
-        # May or may not find symbols depending on matching
-        # The important thing is the integration works
-
-    def test_find_related_files_uses_repo_map(
-        self, sandbox: CodeSandbox, repo_map: RepoMap
-    ) -> None:
-        """Should use RepoMap for finding related files."""
-        discoverer = IntentDiscoverer(sandbox, repo_map=repo_map)
-
-        # Search for User-related files
-        related = discoverer._find_related_files("User model")
-
-        # Should find files containing User
-        assert len(related) > 0
-
-    def test_find_symbols_for_prompt(
-        self, sandbox: CodeSandbox, repo_map: RepoMap
-    ) -> None:
-        """Should find symbols matching prompt keywords."""
-        discoverer = IntentDiscoverer(sandbox, repo_map=repo_map)
-
-        symbols = discoverer._find_symbols_for_prompt("User helper function")
-
-        # Should find some symbols
-        assert isinstance(symbols, list)
-        # Check if any User or helper symbols found
-        symbol_names = [s.name for s in symbols]
-        assert any("User" in n or "helper" in n for n in symbol_names) or len(symbols) >= 0
-
-    def test_extract_patterns_from_symbols(
-        self, sandbox: CodeSandbox, repo_map: RepoMap
-    ) -> None:
-        """Should extract coding patterns from symbols."""
-        discoverer = IntentDiscoverer(sandbox, repo_map=repo_map)
-
-        # Get some symbols
-        symbols = repo_map.find_symbol("User")
-
-        patterns = discoverer._extract_patterns_from_symbols(symbols)
-
-        assert isinstance(patterns, list)
-        # Should detect dataclass pattern
-        if any(hasattr(s, "decorators") and "@dataclass" in (s.decorators or []) for s in symbols):
-            assert any("dataclass" in p.lower() for p in patterns)
-
-    def test_extract_patterns_empty_symbols(
-        self, sandbox: CodeSandbox, repo_map: RepoMap
-    ) -> None:
-        """Should handle empty symbol list."""
-        discoverer = IntentDiscoverer(sandbox, repo_map=repo_map)
-
-        patterns = discoverer._extract_patterns_from_symbols([])
-
-        assert patterns == []
-
-
 class TestCodebaseIntent:
-    """Tests for CodebaseIntent with RepoMap fields."""
+    """Tests for CodebaseIntent."""
 
-    def test_codebase_intent_has_repo_map_fields(self) -> None:
-        """Should have RepoMap-specific fields."""
+    def test_codebase_intent_basic_fields(self) -> None:
+        """Should have basic fields."""
         intent = CodebaseIntent(
             language="python",
             architecture_style="standard",
@@ -248,26 +155,11 @@ class TestCodebaseIntent:
             related_files=["main.py"],
             existing_patterns=["Use dataclass"],
             test_patterns="pytest",
-            relevant_symbols=["User", "helper"],
-            symbol_context="class User: ...",
         )
 
-        assert intent.relevant_symbols == ["User", "helper"]
-        assert intent.symbol_context == "class User: ..."
-
-    def test_codebase_intent_default_values(self) -> None:
-        """Should have default values for RepoMap fields."""
-        intent = CodebaseIntent(
-            language="python",
-            architecture_style="standard",
-            conventions=[],
-            related_files=[],
-            existing_patterns=[],
-            test_patterns="unknown",
-        )
-
-        assert intent.relevant_symbols == []
-        assert intent.symbol_context == ""
+        assert intent.language == "python"
+        assert intent.architecture_style == "standard"
+        assert intent.test_patterns == "pytest"
 
 
 class TestPromptAnalysis:
@@ -355,8 +247,6 @@ class TestCodebaseAnalysis:
         conventions = discoverer._detect_conventions()
 
         assert isinstance(conventions, list)
-        # Should detect docstrings at minimum
-        assert any("docstring" in c.lower() for c in conventions) or len(conventions) >= 0
 
     def test_detect_test_patterns(
         self, sandbox: CodeSandbox

@@ -8,6 +8,12 @@
 	--terminal-bg: rgba(26, 26, 46, 0.95);
 }
 
+/* Thinking indicator animation */
+@keyframes pulse {
+	0%, 100% { opacity: 0.3; }
+	50% { opacity: 1; }
+}
+
 html,
 body,
 #app {

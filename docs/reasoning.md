@@ -452,6 +452,100 @@ explain_steps = true     # Show reasoning in responses
 verify_each_step = true  # Run mid-flight quality gates
 ```
 
+## Layer Placement Verification
+
+ReOS automatically detects and enforces architectural layer boundaries to prevent logic from being placed in the wrong part of the codebase.
+
+### The Problem
+
+When adding new functionality, it's easy to place code in a convenient location rather than the architecturally correct one. For example:
+- Adding business logic to an RPC handler (should be in agent/service)
+- Adding request parsing to a storage layer (should be in RPC layer)
+- Adding orchestration logic to an executor (should be in agent layer)
+
+### How Layer Detection Works
+
+ReOS extracts layer responsibilities from two sources:
+
+**1. Module Docstrings** (source: "docstring")
+```python
+"""UI RPC server for the ReOS desktop app.
+
+This is intentionally *not* MCP; it's a UI-facing RPC layer.
+
+Design goals:
+- Local-only (stdio; no network listener).
+- Metadata-first by default.
+"""
+```
+
+ReOS parses these docstrings to understand:
+- What layer type this file belongs to (rpc, agent, executor, storage, service)
+- What it's responsible for
+- What it should NOT do (explicit "not" statements)
+
+**2. Path Pattern Inference** (source: "inferred")
+If no docstring exists, ReOS infers layer type from file paths:
+- `*rpc*`, `*server*`, `*handler*` → rpc layer
+- `*agent*` → agent layer
+- `*executor*`, `*runner*` → executor layer
+- `*db*`, `*storage*` → storage layer
+- `*service*` → service layer
+
+### Layer Responsibilities
+
+| Layer | Does | Does NOT |
+|-------|------|----------|
+| **RPC** | Parse requests, route to handlers, format responses | Business logic, decision making |
+| **Agent** | Orchestrate requests, make routing decisions, manage state | Low-level execution, request parsing |
+| **Executor** | Execute planned operations, report progress | Planning, user interaction |
+| **Storage** | Persist/retrieve data, manage connections | Business logic, request handling |
+| **Service** | Implement business logic, coordinate domain operations | Request parsing, response formatting |
+
+### Contract Verification
+
+When Code Mode generates acceptance criteria, it can include `LAYER_APPROPRIATE` criteria:
+
+```json
+{
+  "type": "layer_appropriate",
+  "target_file": "src/reos/ui_rpc_server.py",
+  "pattern": "def _check_repo_prerequisite",
+  "layer_constraint": {
+    "logic_type": "business_logic",
+    "appropriate_layers": ["agent", "service"],
+    "inappropriate_layers": ["rpc", "storage"],
+    "reason": "Business logic should not be in RPC layer"
+  }
+}
+```
+
+If the code is placed in an inappropriate layer, the criterion fails with:
+```
+VIOLATION: business_logic placed in rpc layer (src/reos/ui_rpc_server.py).
+Business logic should not be in RPC layer.
+```
+
+### Writing Good Docstrings
+
+To help ReOS understand your architecture, add docstrings to key files:
+
+```python
+"""User authentication service.
+
+This service handles:
+- User login/logout
+- Session management
+- Token validation
+
+This is intentionally NOT responsible for:
+- HTTP request parsing (that's the RPC layer)
+- Database queries (that's the auth repository)
+"""
+```
+
+ReOS will extract both responsibilities and "not responsible for" statements to guide placement decisions.
+
 ## Circuit Breakers (Paperclip Problem Prevention)
 
 To prevent runaway AI behavior, ReOS enforces hard limits that **cannot be overridden by the AI**:

@@ -367,6 +367,7 @@ class PerspectiveManager:
         phase: Phase,
         user_prompt: str,
         context: str = "",
+        temperature: float | None = None,
     ) -> str:
         """Invoke the LLM expecting JSON response.
 
@@ -374,6 +375,7 @@ class PerspectiveManager:
             phase: The phase/perspective to use.
             user_prompt: The prompt to send.
             context: Additional context to include.
+            temperature: Optional temperature override. If None, uses perspective default.
 
         Returns:
             The LLM JSON response.
@@ -387,10 +389,13 @@ class PerspectiveManager:
         if context:
             system = f"{system}\n\nCONTEXT:\n{context}"
 
+        # Use provided temperature or fall back to perspective default
+        temp = temperature if temperature is not None else perspective.temperature
+
         response = self._llm.chat_json(
             system=system,
             user=user_prompt,
-            temperature=perspective.temperature,
+            temperature=temp,
         )
 
         return response

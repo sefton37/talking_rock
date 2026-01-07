@@ -1807,8 +1807,8 @@ def detect_container_runtime() -> str | None:
             )
             if result.returncode == 0:
                 return "podman"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Podman info check failed: %s", e)
 
     # Check for docker
     if shutil.which("docker"):
@@ -1820,8 +1820,8 @@ def detect_container_runtime() -> str | None:
             )
             if result.returncode == 0:
                 return "docker"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Docker info check failed: %s", e)
 
     return None
 
@@ -2038,8 +2038,8 @@ def _get_user_groups(username: str) -> list[str]:
             parts = result.stdout.split(":")
             if len(parts) >= 2:
                 groups = parts[1].strip().split()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get user groups: %s", e)
     return groups
 
 

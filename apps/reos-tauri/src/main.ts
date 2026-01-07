@@ -24,6 +24,8 @@ import { createPlayOverlay } from './playOverlay';
 import { createSettingsOverlay } from './settingsOverlay';
 import { createContextOverlay } from './contextOverlay';
 import { renderCollapsedDiffPreview } from './diffPreview';
+import { createDiffPreviewOverlay } from './diffPreviewOverlay';
+import { createCodeModeView } from './codeModeView';
 import type {
   ChatRespondResult,
   SystemInfoResult,
@@ -245,408 +247,57 @@ function buildUi() {
   nav.appendChild(navContent);
   nav.appendChild(settingsBtn);
 
-  const center = el('div');
-  center.className = 'center';
-  center.style.flex = '1';
-  center.style.display = 'flex';
-  center.style.flexDirection = 'column';
-
-  // --- Chat Header with Context Meter ---
-  const chatHeader = el('div');
-  chatHeader.className = 'chat-header';
-  chatHeader.style.cssText = `
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
-    border-bottom: 1px solid #333;
-    background: rgba(0,0,0,0.2);
-    gap: 12px;
-  `;
-
-  // Context meter container (clickable)
-  const contextMeter = el('div');
-  contextMeter.className = 'context-meter';
-  contextMeter.style.cssText = `
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    padding: 4px 8px;
-    margin: -4px -8px;
-    border-radius: 6px;
-    transition: background 0.2s;
-  `;
-  contextMeter.title = 'Click to view context details';
-  contextMeter.addEventListener('mouseenter', () => {
-    contextMeter.style.background = 'rgba(255,255,255,0.05)';
-  });
-  contextMeter.addEventListener('mouseleave', () => {
-    contextMeter.style.background = 'transparent';
-  });
-
-  const meterLabel = el('span');
-  meterLabel.textContent = 'Context:';
-  meterLabel.style.cssText = 'font-size: 11px; opacity: 0.7; color: rgba(255,255,255,0.7);';
-
-  const meterBar = el('div');
-  meterBar.className = 'meter-bar';
-  meterBar.style.cssText = `
-    flex: 1;
-    height: 6px;
-    background: rgba(255,255,255,0.1);
-    border-radius: 3px;
-    overflow: hidden;
-    max-width: 200px;
-  `;
-
-  const meterFill = el('div');
-  meterFill.className = 'meter-fill';
-  meterFill.style.cssText = `
-    height: 100%;
-    width: 0%;
-    background: #22c55e;
-    transition: width 0.3s, background 0.3s;
-    border-radius: 3px;
-  `;
-  meterBar.appendChild(meterFill);
-
-  const meterText = el('span');
-  meterText.className = 'meter-text';
-  meterText.textContent = '0%';
-  meterText.style.cssText = 'font-size: 11px; font-family: monospace; min-width: 35px; color: rgba(255,255,255,0.9);';
-
-  contextMeter.appendChild(meterLabel);
-  contextMeter.appendChild(meterBar);
-  contextMeter.appendChild(meterText);
-
-  // Chat actions dropdown
-  const actionsContainer = el('div');
-  actionsContainer.style.cssText = 'position: relative;';
-
-  const actionsBtn = el('button');
-  actionsBtn.textContent = 'Chat Actions ▾';
-  actionsBtn.style.cssText = `
-    background: rgba(255,255,255,0.1);
-    border: 1px solid rgba(255,255,255,0.2);
-    border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 11px;
-    cursor: pointer;
-    color: rgba(255,255,255,0.9);
-  `;
-
-  const actionsMenu = el('div');
-  actionsMenu.className = 'actions-menu';
-  actionsMenu.style.cssText = `
-    display: none;
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 4px;
-    background: #2a2a2a;
-    border: 1px solid #444;
-    border-radius: 6px;
-    min-width: 160px;
-    z-index: 100;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  `;
-
-  const createMenuItem = (label: string, icon: string, onClick: () => void) => {
-    const item = el('div');
-    item.textContent = `${icon} ${label}`;
-    item.style.cssText = `
-      padding: 8px 12px;
-      cursor: pointer;
-      font-size: 12px;
-      transition: background 0.15s;
-      color: rgba(255,255,255,0.9);
-    `;
-    item.addEventListener('mouseenter', () => { item.style.background = 'rgba(255,255,255,0.1)'; });
-    item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
-    item.addEventListener('click', () => {
-      actionsMenu.style.display = 'none';
-      onClick();
-    });
-    return item;
-  };
-
-  actionsMenu.appendChild(createMenuItem('Archive Chat', '📦', () => void archiveChat()));
-  actionsMenu.appendChild(createMenuItem('Compact Chat', '🧠', () => void compactChat()));
-
-  const deleteDivider = el('div');
-  deleteDivider.style.cssText = 'border-top: 1px solid #444; margin: 4px 0;';
-  actionsMenu.appendChild(deleteDivider);
-
-  actionsMenu.appendChild(createMenuItem('Delete Chat', '🗑️', () => void deleteChat()));
-
-  actionsBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    actionsMenu.style.display = actionsMenu.style.display === 'none' ? 'block' : 'none';
-  });
-
-  document.addEventListener('click', () => {
-    actionsMenu.style.display = 'none';
-  });
-
-  actionsContainer.appendChild(actionsBtn);
-  actionsContainer.appendChild(actionsMenu);
-
-  chatHeader.appendChild(contextMeter);
-  chatHeader.appendChild(actionsContainer);
-
-  const chatLog = el('div');
-  chatLog.className = 'chat-log';
-  chatLog.style.flex = '1';
-  chatLog.style.padding = '12px';
-  chatLog.style.overflow = 'auto';
-
-  const inputRow = el('div');
-  inputRow.className = 'input-row';
-  inputRow.style.display = 'flex';
-  inputRow.style.gap = '8px';
-  inputRow.style.padding = '12px';
-  inputRow.style.borderTop = '1px solid #ddd';
-
-  const input = el('input');
-  input.className = 'chat-input';
-  input.type = 'text';
-  input.placeholder = 'Ask me anything about your Linux system…';
-  input.style.flex = '1';
-
-  const send = el('button');
-  send.className = 'send-btn';
-  send.textContent = 'Send';
-
-  inputRow.appendChild(input);
-  inputRow.appendChild(send);
-
-  const inspection = el('div');
-  inspection.className = 'inspection';
-  inspection.style.width = '420px';
-  inspection.style.borderLeft = '1px solid #ddd';
-  inspection.style.margin = '0';
-  inspection.style.padding = '12px';
-  inspection.style.overflow = 'auto';
-
-  const inspectionTitle = el('div');
-  inspectionTitle.style.fontWeight = '600';
-  inspectionTitle.style.marginBottom = '8px';
-  inspectionTitle.textContent = 'Message Inspector';
-
-  const inspectionBody = el('div');
-  inspectionBody.innerHTML = `
-    <div style="color: rgba(255,255,255,0.5); font-size: 13px; text-align: center; padding: 40px 20px;">
-      <div style="font-size: 24px; margin-bottom: 8px;">🔍</div>
-      <div>Click any ReOS message to inspect its details</div>
-    </div>
-  `;
-
-  inspection.appendChild(inspectionTitle);
-  inspection.appendChild(inspectionBody);
-
-  // Store for message data (keyed by bubble element)
-  const messageDataMap = new WeakMap<HTMLElement, ChatRespondResult>();
-
-  // Function to display message details in inspector
-  function showMessageInInspector(data: ChatRespondResult) {
-    inspectionTitle.textContent = 'Message Inspector';
-    inspectionBody.innerHTML = '';
-
-    // Tool Calls Section
-    if (data.tool_calls && data.tool_calls.length > 0) {
-      const toolsSection = el('div');
-      toolsSection.style.marginBottom = '16px';
-
-      const toolsHeader = el('div');
-      toolsHeader.textContent = '🔧 Tool Calls';
-      toolsHeader.style.fontWeight = '600';
-      toolsHeader.style.marginBottom = '8px';
-      toolsHeader.style.fontSize = '13px';
-      toolsSection.appendChild(toolsHeader);
-
-      for (const tool of data.tool_calls) {
-        const toolBox = el('div');
-        toolBox.style.cssText = `
-          background: rgba(59, 130, 246, 0.1);
-          border: 1px solid rgba(59, 130, 246, 0.3);
-          border-radius: 8px;
-          padding: 10px;
-          margin-bottom: 8px;
-          font-size: 12px;
-        `;
-
-        const toolName = el('div');
-        toolName.style.fontWeight = '600';
-        toolName.style.marginBottom = '4px';
-        toolName.textContent = `${tool.ok ? '✅' : '❌'} ${tool.name}`;
-        toolBox.appendChild(toolName);
-
-        if (tool.arguments && Object.keys(tool.arguments).length > 0) {
-          const argsLabel = el('div');
-          argsLabel.style.opacity = '0.7';
-          argsLabel.style.marginTop = '6px';
-          argsLabel.textContent = 'Arguments:';
-          toolBox.appendChild(argsLabel);
-
-          const argsPre = el('pre');
-          argsPre.style.cssText = 'margin: 4px 0 0 0; font-size: 11px; white-space: pre-wrap; word-break: break-all;';
-          argsPre.textContent = JSON.stringify(tool.arguments, null, 2);
-          toolBox.appendChild(argsPre);
-        }
-
-        if (tool.result !== undefined) {
-          const resultLabel = el('div');
-          resultLabel.style.opacity = '0.7';
-          resultLabel.style.marginTop = '6px';
-          resultLabel.textContent = 'Result:';
-          toolBox.appendChild(resultLabel);
-
-          const resultPre = el('pre');
-          resultPre.style.cssText = 'margin: 4px 0 0 0; font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 150px; overflow: auto;';
-          const resultText = typeof tool.result === 'string' ? tool.result : JSON.stringify(tool.result, null, 2);
-          resultPre.textContent = resultText.length > 500 ? resultText.slice(0, 500) + '...' : resultText;
-          toolBox.appendChild(resultPre);
-        }
-
-        if (tool.error) {
-          const errorBox = el('div');
-          errorBox.style.cssText = 'margin-top: 6px; color: #ef4444;';
-          errorBox.textContent = `Error: ${tool.error.message}`;
-          toolBox.appendChild(errorBox);
-        }
-
-        toolsSection.appendChild(toolBox);
+  // ============ Code Mode View (main view) ============
+  // This replaces the old center+inspection layout with an execution panel + chat sidebar
+  const codeModeView = createCodeModeView({
+    onSendMessage: async (message: string) => {
+      // Will be wired up in onSend below
+      return handleChatMessage(message);
+    },
+    onCancelExecution: async () => {
+      if (activeCodeExecId) {
+        await kernelRequest('code-exec/cancel', { execution_id: activeCodeExecId });
       }
-      inspectionBody.appendChild(toolsSection);
-    }
+    },
+    kernelRequest,
+  });
 
-    // Thinking Steps Section
-    if (data.thinking_steps && data.thinking_steps.length > 0) {
-      const thinkingSection = el('div');
-      thinkingSection.style.marginBottom = '16px';
+  // Context state for the context meter
+  let currentConversationId: string | null = null;
 
-      const thinkingHeader = el('div');
-      thinkingHeader.textContent = '💭 Thinking Steps';
-      thinkingHeader.style.fontWeight = '600';
-      thinkingHeader.style.marginBottom = '8px';
-      thinkingHeader.style.fontSize = '13px';
-      thinkingSection.appendChild(thinkingHeader);
+  // Note: Context meter and chat actions are now integrated into the Code Mode view header
+  // The old center panel UI (chatHeader, chatLog, inputRow, inspection) has been replaced
+  // by the Code Mode view which provides execution panel + chat sidebar
 
-      const thinkingBox = el('div');
-      thinkingBox.style.cssText = `
-        background: rgba(100, 100, 120, 0.2);
-        border: 1px solid rgba(150, 150, 180, 0.3);
-        border-radius: 8px;
-        padding: 10px;
-        font-size: 12px;
-      `;
+  // Store for message data (keyed by content for lookup)
+  const messageDataStore: ChatRespondResult[] = [];
 
-      data.thinking_steps.forEach((step, i) => {
-        const stepEl = el('div');
-        stepEl.style.cssText = `
-          padding: 6px 0;
-          border-bottom: 1px solid rgba(255,255,255,0.05);
-        `;
-        stepEl.textContent = `${i + 1}. ${step}`;
-        thinkingBox.appendChild(stepEl);
-      });
+  // Legacy stub elements for The Play inspector (now handled by overlay)
+  // These are kept to avoid breaking old code that references them
+  const inspectionTitle = el('div') as HTMLDivElement;
+  const inspectionBody = el('div') as HTMLDivElement;
+  // Note: The Play inspector is now shown in the overlay, not the main view
 
-      thinkingSection.appendChild(thinkingBox);
-      inspectionBody.appendChild(thinkingSection);
-    }
+  // Legacy stub elements for context meter (removed from visible UI)
+  // The context is now tracked internally but not shown in the new Code Mode view
+  const meterFill = el('div') as HTMLDivElement;
+  const meterText = el('span') as HTMLSpanElement;
+  // These stubs prevent errors when updateContextMeter is called
 
-    // Metadata Section
-    const metaSection = el('div');
-    metaSection.style.marginBottom = '16px';
+  // Legacy stub for chatLog (now handled by Code Mode view chat sidebar)
+  const chatLog = el('div') as HTMLDivElement;
+  // Note: Use codeModeView.clearChat() for clearing chat
 
-    const metaHeader = el('div');
-    metaHeader.textContent = '📋 Metadata';
-    metaHeader.style.fontWeight = '600';
-    metaHeader.style.marginBottom = '8px';
-    metaHeader.style.fontSize = '13px';
-    metaSection.appendChild(metaHeader);
+  // Code Mode execution tracking (needed by codeModeView callbacks)
+  let codeExecActive = false;
+  let activeCodeExecId: string | null = null;
+  let codeExecState: Partial<CodeExecutionState> | null = null;
+  let codeExecPollInterval: ReturnType<typeof setInterval> | null = null;
 
-    const metaBox = el('div');
-    metaBox.style.cssText = `
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 8px;
-      padding: 10px;
-      font-size: 12px;
-    `;
-
-    const metaItems = [
-      { label: 'Conversation ID', value: data.conversation_id },
-      { label: 'Message ID', value: data.message_id },
-      { label: 'Message Type', value: data.message_type },
-      { label: 'Pending Approval', value: data.pending_approval_id || 'None' },
-    ];
-
-    if (data.intent_handled) {
-      metaItems.push({ label: 'Intent Handled', value: data.intent_handled });
-    }
-
-    for (const item of metaItems) {
-      const row = el('div');
-      row.style.cssText = 'display: flex; justify-content: space-between; margin-bottom: 4px;';
-      row.innerHTML = `<span style="opacity: 0.7">${item.label}:</span><span style="font-family: monospace;">${item.value}</span>`;
-      metaBox.appendChild(row);
-    }
-
-    metaSection.appendChild(metaBox);
-    inspectionBody.appendChild(metaSection);
-
-    // Raw JSON Section (collapsible)
-    const rawSection = el('div');
-
-    const rawHeader = el('div');
-    rawHeader.style.cssText = 'font-weight: 600; margin-bottom: 8px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px;';
-    rawHeader.innerHTML = '<span class="raw-toggle">▶</span> 📄 Raw JSON';
-    rawSection.appendChild(rawHeader);
-
-    const rawContent = el('div');
-    rawContent.style.display = 'none';
-
-    const rawPre = el('pre');
-    rawPre.style.cssText = `
-      background: rgba(0, 0, 0, 0.3);
-      border-radius: 8px;
-      padding: 10px;
-      font-size: 11px;
-      white-space: pre-wrap;
-      word-break: break-all;
-      max-height: 300px;
-      overflow: auto;
-      margin: 0;
-    `;
-    rawPre.textContent = JSON.stringify(data, null, 2);
-    rawContent.appendChild(rawPre);
-
-    rawSection.appendChild(rawContent);
-    inspectionBody.appendChild(rawSection);
-
-    // Toggle raw JSON visibility
-    rawHeader.addEventListener('click', () => {
-      const toggle = rawHeader.querySelector('.raw-toggle');
-      if (rawContent.style.display === 'none') {
-        rawContent.style.display = 'block';
-        if (toggle) toggle.textContent = '▼';
-      } else {
-        rawContent.style.display = 'none';
-        if (toggle) toggle.textContent = '▶';
-      }
-    });
-  }
-
-  center.appendChild(chatHeader);
-  center.appendChild(chatLog);
-  center.appendChild(inputRow);
-
+  // ============ Shell Assembly ============
+  // New layout: nav (280px) | codeModeView (execution panel + chat sidebar)
   shell.appendChild(nav);
-  shell.appendChild(center);
-  shell.appendChild(inspection);
+  shell.appendChild(codeModeView.container);
 
   root.appendChild(shell);
 
@@ -669,6 +320,10 @@ function buildUi() {
   // Create Context overlay
   const contextOverlay = createContextOverlay();
   root.appendChild(contextOverlay.element);
+
+  // Create Diff Preview overlay for code changes
+  const diffPreviewOverlay = createDiffPreviewOverlay();
+  root.appendChild(diffPreviewOverlay.element);
 
   function createCopyButton(getText: () => string): HTMLButtonElement {
     const btn = el('button') as HTMLButtonElement;
@@ -702,44 +357,26 @@ function buildUi() {
     return btn;
   }
 
-  function append(role: 'user' | 'reos', text: string) {
-    const row = el('div');
-    row.className = `chat-row ${role}`;
-
-    const bubble = el('div');
-    bubble.className = `chat-bubble ${role}`;
-    bubble.style.position = 'relative';
-    bubble.textContent = text;
-
-    // Add copy button
-    const copyBtn = createCopyButton(() => text);
-    bubble.appendChild(copyBtn);
-
-    // Show copy button on hover
-    bubble.addEventListener('mouseenter', () => { copyBtn.style.opacity = '1'; });
-    bubble.addEventListener('mouseleave', () => { copyBtn.style.opacity = '0'; });
-
-    row.appendChild(bubble);
-    chatLog.appendChild(row);
-    chatLog.scrollTop = chatLog.scrollHeight;
+  // Helper to append messages to the Code Mode view's chat sidebar
+  function append(role: 'user' | 'reos', text: string, data?: ChatRespondResult) {
+    codeModeView.addChatMessage(role === 'user' ? 'user' : 'assistant', text, data);
+    if (data) {
+      messageDataStore.push(data);
+    }
   }
 
-  function appendThinking(): { row: HTMLDivElement; bubble: HTMLDivElement } {
-    const row = el('div') as HTMLDivElement;
-    row.className = 'chat-row reos';
+  // Thinking indicator - we'll simulate with a placeholder message that gets replaced
+  let pendingThinkingResolve: (() => void) | null = null;
 
-    const bubble = el('div') as HTMLDivElement;
-    bubble.className = 'chat-bubble reos thinking';
-
-    const dots = el('span') as HTMLSpanElement;
-    dots.className = 'typing-dots';
-    dots.innerHTML = '<span></span><span></span><span></span>';
-    bubble.appendChild(dots);
-
-    row.appendChild(bubble);
-    chatLog.appendChild(row);
-    chatLog.scrollTop = chatLog.scrollHeight;
-    return { row, bubble };
+  function appendThinking(): { remove: () => void } {
+    // Add a temporary "thinking..." message that will be replaced
+    codeModeView.addChatMessage('assistant', '...');
+    return {
+      remove: () => {
+        // The actual response will be added which replaces this conceptually
+        // In the new UI, the thinking animation is shown differently
+      }
+    };
   }
 
   let activeActId: string | null = null;
@@ -757,11 +394,8 @@ function buildUi() {
   // Flag to track if "The Play" view is active in the inspection panel
   let playInspectorActive = false;
 
-  // Code Mode execution tracking
-  let codeExecActive = false;
-  let activeCodeExecId: string | null = null;
-  let codeExecState: CodeExecutionState | null = null;
-  let codeExecPollInterval: ReturnType<typeof setInterval> | null = null;
+  // Note: Code Mode execution variables (codeExecActive, activeCodeExecId, codeExecState, codeExecPollInterval)
+  // are declared earlier in buildUi before the codeModeView creation
 
   // Phase icons for progress visualization
   const PHASE_ICONS: Record<string, string> = {
@@ -780,301 +414,43 @@ function buildUi() {
     'approval': '⏸️',
   };
 
+  // Render execution state in the Code Mode view (replaces old inspector)
   function renderCodeExecutionInspector() {
-    if (!codeExecState) return;
-
-    inspectionTitle.textContent = 'Code Execution';
-    inspectionBody.innerHTML = '';
-
-    const state = codeExecState;
-
-    // Header with cancel button
-    const headerRow = el('div');
-    headerRow.style.display = 'flex';
-    headerRow.style.justifyContent = 'space-between';
-    headerRow.style.alignItems = 'center';
-    headerRow.style.marginBottom = '12px';
-
-    const statusIcon = el('span');
-    statusIcon.textContent = PHASE_ICONS[state.status] || '⏳';
-    statusIcon.style.fontSize = '20px';
-    headerRow.appendChild(statusIcon);
-
-    if (!state.is_complete) {
-      const cancelBtn = smallButton('Cancel');
-      cancelBtn.style.background = 'rgba(239, 68, 68, 0.2)';
-      cancelBtn.style.borderColor = 'rgba(239, 68, 68, 0.5)';
-      cancelBtn.addEventListener('click', () => {
-        void (async () => {
-          if (activeCodeExecId) {
-            await kernelRequest('code/exec/cancel', { execution_id: activeCodeExecId });
-          }
-        })();
-      });
-      headerRow.appendChild(cancelBtn);
-    }
-    inspectionBody.appendChild(headerRow);
-
-    // Phase progress bar
-    const progressSection = el('div');
-    progressSection.style.marginBottom = '16px';
-
-    const progressLabel = el('div');
-    progressLabel.style.fontSize = '12px';
-    progressLabel.style.marginBottom = '4px';
-    progressLabel.textContent = `${state.phase}: ${state.phase_description}`;
-    progressSection.appendChild(progressLabel);
-
-    const progressBar = el('div');
-    progressBar.style.cssText = `
-      height: 6px;
-      background: rgba(255,255,255,0.1);
-      border-radius: 3px;
-      overflow: hidden;
-    `;
-    const progressFill = el('div');
-    const progressPercent = Math.min(100, (state.phase_index / 8) * 100);
-    progressFill.style.cssText = `
-      height: 100%;
-      width: ${progressPercent}%;
-      background: ${state.is_complete ? (state.success ? '#22c55e' : '#ef4444') : '#3b82f6'};
-      transition: width 0.3s ease;
-    `;
-    progressBar.appendChild(progressFill);
-    progressSection.appendChild(progressBar);
-
-    // Iteration info
-    const iterInfo = el('div');
-    iterInfo.style.fontSize = '11px';
-    iterInfo.style.opacity = '0.7';
-    iterInfo.style.marginTop = '4px';
-    iterInfo.textContent = `Iteration ${state.iteration}/${state.max_iterations} • ${state.elapsed_seconds.toFixed(1)}s`;
-    progressSection.appendChild(iterInfo);
-
-    inspectionBody.appendChild(progressSection);
-
-    // Current step
-    if (state.current_step) {
-      const stepSection = el('div');
-      stepSection.style.cssText = `
-        background: rgba(59, 130, 246, 0.1);
-        border: 1px solid rgba(59, 130, 246, 0.3);
-        border-radius: 8px;
-        padding: 10px;
-        margin-bottom: 12px;
-        font-size: 12px;
-      `;
-
-      const stepHeader = el('div');
-      stepHeader.style.fontWeight = '600';
-      stepHeader.style.marginBottom = '4px';
-      stepHeader.textContent = `Step ${state.steps_completed + 1}/${state.steps_total}`;
-      stepSection.appendChild(stepHeader);
-
-      const stepDesc = el('div');
-      stepDesc.textContent = state.current_step.description;
-      stepSection.appendChild(stepDesc);
-
-      if (state.current_step.target_file) {
-        const targetFile = el('div');
-        targetFile.style.opacity = '0.7';
-        targetFile.style.marginTop = '4px';
-        targetFile.textContent = `📁 ${state.current_step.target_file}`;
-        stepSection.appendChild(targetFile);
-      }
-
-      inspectionBody.appendChild(stepSection);
-    }
-
-    // Debug diagnosis (if debugging)
-    if (state.status === 'debug' && state.debug_diagnosis) {
-      const debugSection = el('div');
-      debugSection.style.cssText = `
-        background: rgba(245, 158, 11, 0.1);
-        border: 1px solid rgba(245, 158, 11, 0.3);
-        border-radius: 8px;
-        padding: 10px;
-        margin-bottom: 12px;
-        font-size: 12px;
-      `;
-
-      const debugHeader = el('div');
-      debugHeader.style.fontWeight = '600';
-      debugHeader.style.marginBottom = '4px';
-      debugHeader.textContent = `🔧 Debug Attempt ${state.debug_attempt}`;
-      debugSection.appendChild(debugHeader);
-
-      const rootCause = el('div');
-      rootCause.textContent = state.debug_diagnosis.root_cause;
-      debugSection.appendChild(rootCause);
-
-      const confidence = el('div');
-      confidence.style.opacity = '0.7';
-      confidence.style.marginTop = '4px';
-      confidence.textContent = `Confidence: ${state.debug_diagnosis.confidence}`;
-      debugSection.appendChild(confidence);
-
-      inspectionBody.appendChild(debugSection);
-    }
-
-    // Exploration (multi-path alternatives)
-    if (state.is_exploring || state.exploration_results.length > 0) {
-      const exploreSection = el('div');
-      exploreSection.style.cssText = `
-        background: rgba(139, 92, 246, 0.1);
-        border: 1px solid rgba(139, 92, 246, 0.3);
-        border-radius: 8px;
-        padding: 10px;
-        margin-bottom: 12px;
-        font-size: 12px;
-      `;
-
-      const exploreHeader = el('div');
-      exploreHeader.style.fontWeight = '600';
-      exploreHeader.style.marginBottom = '8px';
-      exploreHeader.textContent = `🔀 Exploring Alternatives (${state.exploration_current_idx + 1}/${state.exploration_alternatives_total})`;
-      exploreSection.appendChild(exploreHeader);
-
-      // Show current alternative being tried
-      if (state.exploration_current_alternative) {
-        const currentAlt = el('div');
-        currentAlt.style.cssText = `
-          background: rgba(139, 92, 246, 0.15);
-          border-radius: 4px;
-          padding: 6px 8px;
-          margin-bottom: 8px;
-        `;
-        const altName = el('div');
-        altName.style.fontWeight = '500';
-        altName.textContent = `→ ${state.exploration_current_alternative.approach}`;
-        currentAlt.appendChild(altName);
-
-        const altScore = el('div');
-        altScore.style.fontSize = '10px';
-        altScore.style.opacity = '0.7';
-        altScore.textContent = `Score: ${(state.exploration_current_alternative.score * 100).toFixed(0)}%`;
-        currentAlt.appendChild(altScore);
-
-        exploreSection.appendChild(currentAlt);
-      }
-
-      // Show results of tried alternatives
-      if (state.exploration_results.length > 0) {
-        const resultsList = el('div');
-        resultsList.style.marginTop = '4px';
-        for (const result of state.exploration_results) {
-          const resultItem = el('div');
-          resultItem.style.fontSize = '11px';
-          resultItem.style.opacity = '0.8';
-          const icon = result.success ? '✓' : '✗';
-          resultItem.textContent = `${icon} ${result.approach}`;
-          resultItem.style.color = result.success ? '#22c55e' : '#ef4444';
-          resultsList.appendChild(resultItem);
-        }
-        exploreSection.appendChild(resultsList);
-      }
-
-      inspectionBody.appendChild(exploreSection);
-    }
-
-    // Output panel
-    const outputSection = el('div');
-    outputSection.style.marginBottom = '12px';
-
-    const outputHeader = el('div');
-    outputHeader.style.fontSize = '12px';
-    outputHeader.style.fontWeight = '600';
-    outputHeader.style.marginBottom = '4px';
-    outputHeader.textContent = '📄 Output';
-    outputSection.appendChild(outputHeader);
-
-    const outputBox = el('div');
-    outputBox.style.cssText = `
-      background: rgba(0,0,0,0.3);
-      border-radius: 6px;
-      padding: 8px;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 11px;
-      max-height: 150px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    `;
-    outputBox.textContent = state.output_lines.slice(-20).join('\n') || '(no output yet)';
-    outputSection.appendChild(outputBox);
-
-    inspectionBody.appendChild(outputSection);
-
-    // Files changed
-    if (state.files_changed.length > 0) {
-      const filesSection = el('div');
-
-      const filesHeader = el('div');
-      filesHeader.style.fontSize = '12px';
-      filesHeader.style.fontWeight = '600';
-      filesHeader.style.marginBottom = '4px';
-      filesHeader.textContent = '📂 Files Changed';
-      filesSection.appendChild(filesHeader);
-
-      const filesList = el('div');
-      filesList.style.fontSize = '11px';
-      for (const f of state.files_changed) {
-        const fileItem = el('div');
-        fileItem.style.opacity = '0.8';
-        fileItem.textContent = `• ${f}`;
-        filesList.appendChild(fileItem);
-      }
-      filesSection.appendChild(filesList);
-
-      inspectionBody.appendChild(filesSection);
-    }
-
-    // Completion summary
-    if (state.is_complete) {
-      const completeSection = el('div');
-      completeSection.style.cssText = `
-        background: ${state.success ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)'};
-        border: 1px solid ${state.success ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'};
-        border-radius: 8px;
-        padding: 10px;
-        margin-top: 12px;
-        font-size: 12px;
-      `;
-
-      const completeHeader = el('div');
-      completeHeader.style.fontWeight = '600';
-      completeHeader.textContent = state.success ? '✅ Complete' : '❌ Failed';
-      completeSection.appendChild(completeHeader);
-
-      if (state.result_message) {
-        const msg = el('div');
-        msg.style.marginTop = '4px';
-        msg.textContent = state.result_message;
-        completeSection.appendChild(msg);
-      }
-
-      if (state.error) {
-        const errMsg = el('div');
-        errMsg.style.color = '#ef4444';
-        errMsg.style.marginTop = '4px';
-        errMsg.textContent = state.error;
-        completeSection.appendChild(errMsg);
-      }
-
-      const criteriaInfo = el('div');
-      criteriaInfo.style.opacity = '0.7';
-      criteriaInfo.style.marginTop = '4px';
-      criteriaInfo.textContent = `${state.criteria_fulfilled}/${state.criteria_total} criteria fulfilled`;
-      completeSection.appendChild(criteriaInfo);
-
-      inspectionBody.appendChild(completeSection);
-    }
+    codeModeView.updateExecutionState(codeExecState);
   }
 
   function startCodeExecPolling(executionId: string) {
     activeCodeExecId = executionId;
     codeExecActive = true;
     playInspectorActive = false;
+
+    // Show immediate "Starting Execution" state before first poll
+    codeExecState = {
+      execution_id: executionId,
+      status: 'pending',
+      phase_index: 0,
+      phase_description: 'Starting execution...',
+      is_complete: false,
+      success: false,
+      steps_completed: 0,
+      steps_total: 0,
+      iteration: 0,
+      max_iterations: 10,
+      elapsed_seconds: 0,
+      output_lines: ['Initializing execution...'],
+      files_changed: [],
+      current_step: null,
+      debug_diagnosis: null,
+      debug_attempt: 0,
+      is_exploring: false,
+      exploration_alternatives_total: 0,
+      exploration_current_idx: 0,
+      exploration_current_alternative: null,
+      exploration_results: [],
+      result_message: null,
+      error: null,
+    };
+    renderCodeExecutionInspector();
 
     // Poll every 500ms
     codeExecPollInterval = setInterval(() => {
@@ -1090,13 +466,20 @@ function buildUi() {
           }
         } catch (e) {
           console.error('Code exec poll error:', e);
+          // Show error state in Code Mode view
+          if (codeExecState) {
+            codeExecState = {
+              ...codeExecState,
+              is_complete: true,
+              success: false,
+              error: `Lost connection to execution: ${e instanceof Error ? e.message : String(e)}`,
+            };
+            renderCodeExecutionInspector();
+          }
           stopCodeExecPolling();
         }
       })();
     }, 500);
-
-    // Initial render
-    renderCodeExecutionInspector();
   }
 
   function stopCodeExecPolling() {
@@ -1104,16 +487,12 @@ function buildUi() {
       clearInterval(codeExecPollInterval);
       codeExecPollInterval = null;
     }
-    // Keep codeExecActive true so inspector stays visible
+    // Keep codeExecActive true so view stays visible
   }
 
+  // Log JSON to console for debugging (no longer renders to inspector)
   function showJsonInInspector(title: string, obj: unknown) {
-    inspectionTitle.textContent = title;
-    inspectionBody.innerHTML = '';
-    const pre = el('pre');
-    pre.style.margin = '0';
-    pre.textContent = JSON.stringify(obj ?? null, null, 2);
-    inspectionBody.appendChild(pre);
+    console.log(`[${title}]`, obj);
   }
 
   async function openDashboardWindow() {
@@ -1249,6 +628,19 @@ function buildUi() {
 
     const actTitle = textInput('');
     const actNotes = textArea('', 70);
+    const actRepoPath = textInput('');
+    actRepoPath.placeholder = '~/projects/my-project';
+    const actRepoRow = el('div');
+    actRepoRow.style.display = 'flex';
+    actRepoRow.style.gap = '8px';
+    actRepoRow.style.alignItems = 'center';
+    const actRepoAssign = smallButton('Set Repo');
+    actRepoRow.appendChild(actRepoPath);
+    actRepoRow.appendChild(actRepoAssign);
+    const actRepoStatus = el('div');
+    actRepoStatus.style.fontSize = '11px';
+    actRepoStatus.style.marginTop = '4px';
+    actRepoStatus.style.color = '#666';
     const actSave = smallButton('Save Act');
     const actCreateRow = el('div');
     actCreateRow.style.display = 'flex';
@@ -1263,6 +655,9 @@ function buildUi() {
     inspectionBody.appendChild(actTitle);
     inspectionBody.appendChild(label('Notes'));
     inspectionBody.appendChild(actNotes);
+    inspectionBody.appendChild(label('Repository Path'));
+    inspectionBody.appendChild(actRepoRow);
+    inspectionBody.appendChild(actRepoStatus);
     inspectionBody.appendChild(actSave);
     inspectionBody.appendChild(label('Create new act'));
     inspectionBody.appendChild(actCreateRow);
@@ -1271,6 +666,14 @@ function buildUi() {
       if (!activeAct) return;
       actTitle.value = activeAct.title ?? '';
       actNotes.value = activeAct.notes ?? '';
+      actRepoPath.value = activeAct.repo_path ?? '';
+      if (activeAct.repo_path) {
+        actRepoStatus.textContent = `Current: ${activeAct.repo_path}`;
+        actRepoStatus.style.color = '#22c55e';
+      } else {
+        actRepoStatus.textContent = 'No repository assigned. Code mode requires a repo.';
+        actRepoStatus.style.color = '#f59e0b';
+      }
     })();
 
     actSave.addEventListener('click', () => {
@@ -1282,6 +685,36 @@ function buildUi() {
           notes: actNotes.value
         });
         await refreshActs();
+      })();
+    });
+
+    actRepoAssign.addEventListener('click', () => {
+      void (async () => {
+        if (!activeActId) return;
+        const repoPath = actRepoPath.value.trim();
+        if (!repoPath) {
+          actRepoStatus.textContent = 'Please enter a repository path';
+          actRepoStatus.style.color = '#ef4444';
+          return;
+        }
+        try {
+          actRepoAssign.disabled = true;
+          actRepoAssign.textContent = 'Setting...';
+          const res = await kernelRequest('play/acts/assign_repo', {
+            act_id: activeActId,
+            repo_path: repoPath,
+          }) as { success: boolean; repo_path: string };
+          actRepoStatus.textContent = `Set: ${res.repo_path}`;
+          actRepoStatus.style.color = '#22c55e';
+          actRepoPath.value = res.repo_path;
+          await refreshActs();
+        } catch (err) {
+          actRepoStatus.textContent = `Error: ${String(err)}`;
+          actRepoStatus.style.color = '#ef4444';
+        } finally {
+          actRepoAssign.disabled = false;
+          actRepoAssign.textContent = 'Set Repo';
+        }
       })();
     });
 
@@ -1861,10 +1294,10 @@ function buildUi() {
   }
 
 
-  // Track current conversation for context continuity
-  let currentConversationId: string | null = null;
+  // Note: currentConversationId is declared earlier in buildUi
 
-  // Wire up context meter click to show overlay
+  // Legacy stub for context meter click (not visible in new UI)
+  const contextMeter = el('div');
   contextMeter.addEventListener('click', () => {
     contextOverlay.show(currentConversationId);
   });
@@ -1913,7 +1346,7 @@ function buildUi() {
       append('reos', `Chat archived successfully (${result.message_count} messages). Archive ID: ${result.archive_id}`);
 
       // Clear chat after archiving
-      chatLog.innerHTML = '';
+      codeModeView.clearChat();
       currentConversationId = null;
       updateContextMeter();
     } catch (e) {
@@ -1982,7 +1415,7 @@ function buildUi() {
       append('reos', `Learned ${result.added_count} new items. Total knowledge: ${result.total_entries} entries. Chat archived and cleared.`);
 
       // Clear chat
-      chatLog.innerHTML = '';
+      codeModeView.clearChat();
       currentConversationId = null;
       delete (window as unknown as Record<string, unknown>)._pendingCompact;
       updateContextMeter();
@@ -2008,7 +1441,7 @@ function buildUi() {
         conversation_id: currentConversationId,
       });
 
-      chatLog.innerHTML = '';
+      codeModeView.clearChat();
       currentConversationId = null;
       append('reos', 'Chat deleted.');
       updateContextMeter();
@@ -2267,6 +1700,10 @@ function buildUi() {
         previewBox.appendChild(rejectedBox);
       } catch (e) {
         console.error('Rejection error:', e);
+        const errorBox = el('div');
+        errorBox.style.cssText = 'padding: 8px; color: #ef4444; font-size: 12px;';
+        errorBox.textContent = `Failed to reject: ${e instanceof Error ? e.message : String(e)}`;
+        previewBox.appendChild(errorBox);
       }
     });
 
@@ -2373,6 +1810,10 @@ function buildUi() {
         previewBox.appendChild(explainBox);
       } catch (e) {
         console.error('Explain error:', e);
+        const errorBox = el('div');
+        errorBox.style.cssText = 'padding: 8px; color: #ef4444; font-size: 12px;';
+        errorBox.textContent = `Failed to explain: ${e instanceof Error ? e.message : String(e)}`;
+        previewBox.appendChild(errorBox);
       }
     });
 
@@ -2796,6 +2237,9 @@ function buildUi() {
             updateStepUI(plan.steps[0].id, 'running');
           }
 
+          // Start Code Mode view polling for detailed execution state
+          startCodeExecPolling(result.execution_id);
+
           await startPolling(result.execution_id);
         } else {
           approveBtn.textContent = 'Execute Plan';
@@ -2837,6 +2281,7 @@ function buildUi() {
         abortBtn.textContent = 'Abort';
         abortBtn.disabled = false;
         console.error('Abort error:', e);
+        statusLine.innerHTML = `<span style="color: #ef4444;">Failed to abort: ${e instanceof Error ? e.message : String(e)}</span>`;
       }
     });
 
@@ -2853,34 +2298,52 @@ function buildUi() {
     container.appendChild(progressBox);
   }
 
-  async function onSend() {
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = '';
-
+  // Main handler for chat messages - called by the code mode view
+  async function handleChatMessage(text: string): Promise<ChatRespondResult> {
     // Handle compact confirmation commands
     if (text.toLowerCase() === 'confirm compact') {
-      append('user', text);
       await confirmCompact();
-      return;
+      return {
+        answer: 'Compact confirmed.',
+        conversation_id: currentConversationId || '',
+        message_id: '',
+        message_type: 'system',
+        tool_calls: [],
+        thinking_steps: [],
+        pending_approval_id: null,
+      };
     }
     if (text.toLowerCase() === 'cancel' && (window as unknown as Record<string, unknown>)._pendingCompact) {
-      append('user', text);
       delete (window as unknown as Record<string, unknown>)._pendingCompact;
-      append('reos', 'Compact cancelled. Conversation continues.');
-      return;
+      return {
+        answer: 'Compact cancelled. Conversation continues.',
+        conversation_id: currentConversationId || '',
+        message_id: '',
+        message_type: 'system',
+        tool_calls: [],
+        thinking_steps: [],
+        pending_approval_id: null,
+      };
     }
 
-    append('user', text);
+    // Check if we're in Code Mode (active act with repo_path)
+    const activeAct = actsCache.find((a) => a.act_id === activeActId);
+    const isCodeMode = activeAct && activeAct.repo_path;
 
-    // Immediately show an empty ReOS bubble with a thinking animation.
-    const pending = appendThinking();
+    // Check if message starts with approval words (yes, y, ok, okay, proceed)
+    // Allows additional context like "yes proceed" or "yes, generate answers..."
+    const startsWithApproval = text.toLowerCase().match(/^(yes|y|ok|okay|proceed)\b/);
+    const startsWithRejection = text.toLowerCase().match(/^(no|n|cancel|abort)\b/);
 
-    // Ensure the browser paints the new bubbles before we start the kernel RPC.
-    // Note: `requestAnimationFrame` alone can resume into a microtask that still
-    // runs before paint, so we also yield a macrotask.
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // If in Code Mode and user approves (starts with yes/ok/proceed), execute the plan
+    if (isCodeMode && startsWithApproval) {
+      return handleCodeModeApproval();
+    }
+
+    // If in Code Mode and not a rejection, use async planning for new requests
+    if (isCodeMode && !startsWithRejection) {
+      return handleCodeModePlanning(text, activeActId!);
+    }
 
     try {
       const res = (await kernelRequest('chat/respond', {
@@ -2891,111 +2354,18 @@ function buildUi() {
       // Update conversation ID for context continuity
       currentConversationId = res.conversation_id;
 
-      // Update context meter after receiving response
-      void updateContextMeter();
+      // Store response data
+      messageDataStore.push(res);
 
-      // If there are thinking steps, render them as collapsible bubbles before the answer
-      if (res.thinking_steps && res.thinking_steps.length > 0) {
-        const thinkingRow = el('div');
-        thinkingRow.className = 'chat-row reos thinking-row';
-
-        const thinkingBubble = el('div');
-        thinkingBubble.className = 'chat-bubble reos thinking-bubble';
-        thinkingBubble.style.cssText = `
-          position: relative;
-          background: rgba(100, 100, 120, 0.3);
-          border-left: 3px solid rgba(150, 150, 180, 0.5);
-          font-size: 13px;
-          opacity: 0.85;
-        `;
-
-        // Header with toggle
-        const thinkingHeader = el('div');
-        thinkingHeader.style.cssText = `
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          cursor: pointer;
-          font-weight: 500;
-          margin-bottom: 6px;
-        `;
-        thinkingHeader.innerHTML = '<span class="thinking-toggle">▼</span> <span style="opacity: 0.7;">💭 Thinking...</span>';
-
-        // Content (collapsible)
-        const thinkingContent = el('div');
-        thinkingContent.className = 'thinking-content';
-        thinkingContent.style.cssText = `padding-left: 4px;`;
-
-        res.thinking_steps.forEach((step, i) => {
-          const stepEl = el('div');
-          stepEl.style.cssText = `
-            padding: 4px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            color: rgba(255,255,255,0.75);
-          `;
-          stepEl.textContent = step;
-          thinkingContent.appendChild(stepEl);
-        });
-
-        // Toggle collapse
-        let collapsed = false;
-        thinkingHeader.addEventListener('click', () => {
-          collapsed = !collapsed;
-          thinkingContent.style.display = collapsed ? 'none' : 'block';
-          const toggle = thinkingHeader.querySelector('.thinking-toggle');
-          if (toggle) toggle.textContent = collapsed ? '▶' : '▼';
-        });
-
-        // Copy button for thinking
-        const thinkingText = res.thinking_steps.join('\n');
-        const thinkingCopyBtn = createCopyButton(() => thinkingText);
-        thinkingBubble.appendChild(thinkingCopyBtn);
-        thinkingBubble.addEventListener('mouseenter', () => { thinkingCopyBtn.style.opacity = '1'; });
-        thinkingBubble.addEventListener('mouseleave', () => { thinkingCopyBtn.style.opacity = '0'; });
-
-        thinkingBubble.appendChild(thinkingHeader);
-        thinkingBubble.appendChild(thinkingContent);
-        thinkingRow.appendChild(thinkingBubble);
-
-        // Insert thinking bubble before the pending row
-        chatLog.insertBefore(thinkingRow, pending.row);
-      }
-
-      pending.bubble.classList.remove('thinking');
-      pending.bubble.style.position = 'relative';
-      pending.bubble.textContent = res.answer ?? '(no answer)';
-
-      // Add copy button to response
-      const answerText = res.answer ?? '(no answer)';
-      const copyBtn = createCopyButton(() => answerText);
-      pending.bubble.appendChild(copyBtn);
-      pending.bubble.addEventListener('mouseenter', () => { copyBtn.style.opacity = '1'; });
-      pending.bubble.addEventListener('mouseleave', () => { copyBtn.style.opacity = '0'; });
-
-      // Store response data for inspector and make clickable
-      messageDataMap.set(pending.bubble, res);
-      pending.bubble.style.cursor = 'pointer';
-      pending.bubble.title = 'Click to inspect message details';
-      pending.bubble.addEventListener('click', () => {
-        // Remove selection from other bubbles
-        document.querySelectorAll('.chat-bubble.selected').forEach(b => b.classList.remove('selected'));
-        pending.bubble.classList.add('selected');
-        playInspectorActive = false;  // Switch back to Message Inspector mode
-        showMessageInInspector(res);
-      });
-
-      // Code Mode: Display diff preview if present
+      // Code Mode: Handle diff preview if present
       if (res.diff_preview && res.diff_preview.preview) {
-        const diffEl = renderCollapsedDiffPreview(
-          res.diff_preview.preview,
-          res.diff_preview.session_id,
-          () => {
-            // Called when all changes are applied or rejected
-            // Could update UI or show confirmation here
-            console.log('Diff preview completed');
-          }
-        );
-        pending.row.appendChild(diffEl);
+        const preview = res.diff_preview.preview;
+        const sessionId = res.diff_preview.session_id;
+        const onComplete = () => {
+          console.log('Diff preview completed');
+        };
+        // Show the diff overlay
+        diffPreviewOverlay.show(preview, sessionId, onComplete);
       }
 
       // Check if there are pending approvals to display
@@ -3007,9 +2377,8 @@ function buildUi() {
 
         // Check if this is a multi-step plan (approvals with plan_id)
         const planApprovals = approvalsRes.approvals.filter(a => a.plan_id);
-        const singleApprovals = approvalsRes.approvals.filter(a => !a.plan_id);
 
-        // If there's a plan, try to fetch plan details and show progress UI
+        // If there's a plan, we note it in the response for the UI to handle
         if (planApprovals.length > 0) {
           const planId = planApprovals[0].plan_id;
           try {
@@ -3019,45 +2388,360 @@ function buildUi() {
               plan_id: planId
             }) as PlanPreviewResult;
 
-            if (planPreview.has_plan && planPreview.steps && planPreview.steps.length > 1) {
-              // Multi-step plan - use progress visualization
-              appendPlanProgress(planPreview, pending.row, async () => {
-                // Approve the plan and start execution
-                const approveResult = await kernelRequest('plan/approve', {
-                  conversation_id: currentConversationId,
-                  plan_id: planId
-                }) as PlanApproveResult;
-                return approveResult.execution_id ? { execution_id: approveResult.execution_id } : null;
-              });
-            } else {
-              // Single step plan - use regular command preview
-              for (const approval of planApprovals) {
-                appendCommandPreview(approval, pending.row);
-              }
+            if (planPreview.has_plan && planPreview.steps && planPreview.steps.length > 0) {
+              // Add plan info to the response message
+              const planSteps = planPreview.steps.map(s => `• ${s.title}`).join('\n');
+              res.answer = `${res.answer}\n\n**Plan:**\n${planSteps}\n\nApprove to execute this plan.`;
             }
           } catch {
-            // Fallback to command preview if plan/preview fails
-            for (const approval of planApprovals) {
-              appendCommandPreview(approval, pending.row);
-            }
+            // Fallback - add approval notice
+            res.answer = `${res.answer}\n\n_Pending approval required. Check The Play overlay for details._`;
           }
         }
-
-        // Show single command approvals
-        for (const approval of singleApprovals) {
-          appendCommandPreview(approval, pending.row);
-        }
       }
+
+      return res;
     } catch (e) {
-      pending.bubble.classList.remove('thinking');
-      pending.bubble.textContent = `Error: ${String(e)}`;
+      return {
+        answer: `Error: ${String(e)}`,
+        conversation_id: currentConversationId || '',
+        message_id: '',
+        message_type: 'error',
+        tool_calls: [],
+        thinking_steps: [],
+        pending_approval_id: null,
+      };
     }
   }
 
-  send.addEventListener('click', () => void onSend());
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void onSend();
-  });
+  // Handler for Code Mode planning with real-time progress
+  async function handleCodeModePlanning(text: string, actId: string): Promise<ChatRespondResult> {
+    type CodePlanStartResult = { planning_id: string; status: string; prompt: string };
+    type CodePlanningState = {
+      planning_id: string;
+      phase: string;
+      phase_name: string;
+      phase_description: string;
+      phase_index: number;
+      activity_log: string[];
+      is_complete: boolean;
+      success: boolean | null;
+      error: string | null;
+      elapsed_seconds: number;
+      started_at: string;
+    };
+    type CodePlanResultResponse = {
+      success: boolean;
+      error?: string;
+      response_text?: string;
+      plan_id?: string;
+      message_id?: string;
+    };
+
+    try {
+      // Ensure we have a conversation ID
+      if (!currentConversationId) {
+        currentConversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      }
+
+      // Start async planning
+      const startRes = await kernelRequest('code/plan/start', {
+        prompt: text,
+        conversation_id: currentConversationId,
+        act_id: actId,
+      }) as CodePlanStartResult;
+
+      const planningId = startRes.planning_id;
+      console.log('[CodeMode] Planning started:', planningId);
+
+      // Poll for progress and update UI
+      let lastLogLength = 0;
+      let planningComplete = false;
+      let pollCount = 0;
+      const maxPolls = 300; // 5 minutes max (1s intervals)
+
+      while (!planningComplete && pollCount < maxPolls) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second interval
+        pollCount++;
+
+        try {
+          const stateRes = await kernelRequest('code/plan/state', {
+            planning_id: planningId,
+          }) as CodePlanningState;
+
+          // Log new activity (streaming progress to console for now)
+          if (stateRes.activity_log && stateRes.activity_log.length > lastLogLength) {
+            const newLogs = stateRes.activity_log.slice(lastLogLength);
+            for (const log of newLogs) {
+              console.log('[CodeMode]', log);
+            }
+            lastLogLength = stateRes.activity_log.length;
+
+            // Update Code Mode view with progress
+            // Use the backend phase key (e.g., "analyzing_prompt", "generating_criteria")
+            // which maps to UI phases via PHASE_KEY_MAP
+            codeModeView.updateExecutionState({
+              status: stateRes.phase,  // Backend phase key for UI mapping
+              phase: stateRes.phase_name,  // Human-readable name
+              phase_description: stateRes.phase_description,
+              output_lines: stateRes.activity_log,
+              elapsed_seconds: stateRes.elapsed_seconds,
+              is_complete: false,
+              execution_id: planningId,
+              prompt: text,
+            });
+          }
+
+          planningComplete = stateRes.is_complete;
+
+          if (planningComplete) {
+            console.log('[CodeMode] Planning complete, success:', stateRes.success);
+            if (!stateRes.success) {
+              return {
+                answer: `**Code Mode Error:** Planning failed.\n\n${stateRes.error || 'Unknown error'}`,
+                conversation_id: currentConversationId || '',
+                message_id: '',
+                message_type: 'error',
+                tool_calls: [],
+                thinking_steps: [],
+                pending_approval_id: null,
+              };
+            }
+          }
+        } catch (pollErr) {
+          console.error('[CodeMode] Poll error:', pollErr);
+          // Continue polling on error
+        }
+      }
+
+      if (!planningComplete) {
+        return {
+          answer: '**Code Mode Error:** Planning timed out.',
+          conversation_id: currentConversationId || '',
+          message_id: '',
+          message_type: 'error',
+          tool_calls: [],
+          thinking_steps: [],
+          pending_approval_id: null,
+        };
+      }
+
+      // Get final result
+      const resultRes = await kernelRequest('code/plan/result', {
+        planning_id: planningId,
+        conversation_id: currentConversationId,
+      }) as CodePlanResultResponse;
+
+      if (!resultRes.success) {
+        return {
+          answer: `**Code Mode Error:** ${resultRes.error || 'Failed to get plan result'}`,
+          conversation_id: currentConversationId || '',
+          message_id: '',
+          message_type: 'error',
+          tool_calls: [],
+          thinking_steps: [],
+          pending_approval_id: null,
+        };
+      }
+
+      return {
+        answer: resultRes.response_text || 'Plan ready.',
+        conversation_id: currentConversationId || '',
+        message_id: resultRes.message_id || '',
+        message_type: 'code_plan_preview',
+        tool_calls: [],
+        thinking_steps: [],
+        pending_approval_id: resultRes.plan_id || null,
+      };
+
+    } catch (e) {
+      console.error('[CodeMode] Planning error:', e);
+      return {
+        answer: `**Code Mode Error:** ${String(e)}`,
+        conversation_id: currentConversationId || '',
+        message_id: '',
+        message_type: 'error',
+        tool_calls: [],
+        thinking_steps: [],
+        pending_approval_id: null,
+      };
+    }
+  }
+
+  // Handler for Code Mode approval - starts streaming execution
+  async function handleCodeModeApproval(): Promise<ChatRespondResult> {
+    type CodeApproveResult = {
+      execution_id: string;
+      status: string;
+      message?: string;
+    };
+    type CodeExecStateResult = {
+      execution_id: string;
+      status: string;
+      phase: string;
+      phase_description: string;
+      phase_index: number;
+      output_lines: string[];
+      is_complete: boolean;
+      success: boolean | null;
+      error: string | null;
+      elapsed_seconds: number;
+      steps_completed: number;
+      steps_total: number;
+      iteration: number;
+      max_iterations: number;
+    };
+
+    try {
+      console.log('[CodeMode] Approving plan and starting execution...');
+
+      // Show immediate feedback
+      codeModeView.updateExecutionState({
+        status: 'starting',
+        phase: 'Approving',
+        phase_description: 'Starting execution...',
+        phase_index: 0,
+        output_lines: ['Approving plan...'],
+        elapsed_seconds: 0,
+        is_complete: false,
+        iteration: 0,
+        max_iterations: 10,
+        steps_completed: 0,
+        steps_total: 0,
+      });
+
+      // Call code/plan/approve to start streaming execution
+      const approveRes = await kernelRequest('code/plan/approve', {
+        conversation_id: currentConversationId || '',
+        plan_id: null, // Will use pending plan from DB
+      }) as CodeApproveResult;
+
+      if (!approveRes.execution_id) {
+        throw new Error('No execution_id returned from approval');
+      }
+
+      const executionId = approveRes.execution_id;
+      console.log('[CodeMode] Execution started:', executionId);
+
+      // Start polling for execution state
+      const pollInterval = 500; // Poll every 500ms for responsiveness
+      const maxPolls = 1200; // 10 minutes max (500ms * 1200)
+      let pollCount = 0;
+      let executionComplete = false;
+      let lastOutputLength = 0;
+
+      while (!executionComplete && pollCount < maxPolls) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        pollCount++;
+
+        try {
+          const stateRes = await kernelRequest('code/exec/state', {
+            execution_id: executionId,
+          }) as CodeExecStateResult;
+
+          // Log new output lines
+          if (stateRes.output_lines && stateRes.output_lines.length > lastOutputLength) {
+            const newLines = stateRes.output_lines.slice(lastOutputLength);
+            for (const line of newLines) {
+              console.log('[CodeMode Exec]', line);
+            }
+            lastOutputLength = stateRes.output_lines.length;
+          }
+
+          // Update Code Mode view with execution state
+          codeModeView.updateExecutionState({
+            status: stateRes.status,
+            phase: stateRes.phase,
+            phase_description: stateRes.phase_description,
+            phase_index: stateRes.phase_index,
+            output_lines: stateRes.output_lines || [],
+            elapsed_seconds: stateRes.elapsed_seconds,
+            is_complete: stateRes.is_complete,
+            iteration: stateRes.iteration,
+            max_iterations: stateRes.max_iterations,
+            steps_completed: stateRes.steps_completed,
+            steps_total: stateRes.steps_total,
+          });
+
+          executionComplete = stateRes.is_complete;
+
+          if (executionComplete) {
+            const resultMessage = stateRes.success
+              ? '**Execution completed successfully!**'
+              : `**Execution failed:** ${stateRes.error || 'Unknown error'}`;
+
+            return {
+              answer: resultMessage,
+              conversation_id: currentConversationId || '',
+              message_id: '',
+              message_type: stateRes.success ? 'code_execution_complete' : 'error',
+              tool_calls: [],
+              thinking_steps: [],
+              pending_approval_id: null,
+            };
+          }
+        } catch (pollErr) {
+          console.error('[CodeMode] Execution poll error:', pollErr);
+          // Continue polling on error
+        }
+      }
+
+      if (!executionComplete) {
+        return {
+          answer: '**Code Mode Error:** Execution timed out.',
+          conversation_id: currentConversationId || '',
+          message_id: '',
+          message_type: 'error',
+          tool_calls: [],
+          thinking_steps: [],
+          pending_approval_id: null,
+        };
+      }
+
+      return {
+        answer: 'Execution completed.',
+        conversation_id: currentConversationId || '',
+        message_id: '',
+        message_type: 'code_execution_complete',
+        tool_calls: [],
+        thinking_steps: [],
+        pending_approval_id: null,
+      };
+
+    } catch (e) {
+      console.error('[CodeMode] Approval error:', e);
+      const errorMessage = String(e);
+
+      // Update Code Mode UI to show error state
+      codeModeView.updateExecutionState({
+        status: 'error',
+        phase: 'Error',
+        phase_description: 'Execution failed',
+        phase_index: 0,
+        output_lines: ['Approving plan...', `Error: ${errorMessage}`],
+        elapsed_seconds: 0,
+        is_complete: true,
+        success: false,
+        error: errorMessage,
+        iteration: 0,
+        max_iterations: 10,
+        steps_completed: 0,
+        steps_total: 0,
+      });
+
+      return {
+        answer: `**Code Mode Error:** ${errorMessage}`,
+        conversation_id: currentConversationId || '',
+        message_id: '',
+        message_type: 'error',
+        tool_calls: [],
+        thinking_steps: [],
+        pending_approval_id: null,
+      };
+    }
+  }
+
+  // Note: The old send button and input listeners are now handled by the Code Mode view
 
   // Load system status
   async function refreshSystemStatus() {
@@ -3105,17 +2789,19 @@ function buildUi() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
+    const chatInput = codeModeView.getChatInput();
+
     // Ctrl+K or Cmd+K to focus input
     if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
       e.preventDefault();
-      input.focus();
-      input.select();
+      chatInput.focus();
+      chatInput.select();
     }
 
     // Ctrl+L to clear chat
     if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
       e.preventDefault();
-      chatLog.innerHTML = '';
+      codeModeView.clearChat();
       append('reos', 'Chat cleared. How can I help you with your Linux system?');
     }
 
@@ -3126,9 +2812,9 @@ function buildUi() {
     }
 
     // Escape to clear input
-    if (e.key === 'Escape' && document.activeElement === input) {
-      input.value = '';
-      input.blur();
+    if (e.key === 'Escape' && document.activeElement === chatInput) {
+      chatInput.value = '';
+      chatInput.blur();
     }
   });
 
@@ -3502,4 +3188,13 @@ function setupSessionMonitoring(): void {
 // Initialize app on load
 initializeApp().catch((err) => {
   console.error('Failed to initialize app:', err);
+  // Show error prominently in the UI
+  const errorDiv = document.createElement('div');
+  errorDiv.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0;
+    background: #ef4444; color: white; padding: 12px;
+    text-align: center; font-size: 14px; z-index: 9999;
+  `;
+  errorDiv.textContent = `Failed to initialize ReOS: ${err instanceof Error ? err.message : String(err)}`;
+  document.body.appendChild(errorDiv);
 });

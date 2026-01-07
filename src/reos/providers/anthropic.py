@@ -237,8 +237,8 @@ class AnthropicProvider:
                 from .secrets import get_api_key
 
                 self._api_key = get_api_key("anthropic")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to get Anthropic API key from keyring: %s", e)
 
         if not self._api_key:
             raise LLMError(

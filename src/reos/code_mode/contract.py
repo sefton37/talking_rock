@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from reos.code_mode.intent import DiscoveredIntent
     from reos.code_mode.project_memory import ProjectMemoryStore
     from reos.code_mode.sandbox import CodeSandbox
+    from reos.code_mode.session_logger import SessionLogger
+    from reos.code_mode.streaming import ExecutionObserver
     from reos.code_mode.test_generator import TestGenerator
     from reos.providers import LLMProvider
 
@@ -54,6 +56,7 @@ class CriterionType(Enum):
     CLASS_EXISTS = "class_exists"         # A class must exist
     COMMAND_SUCCEEDS = "command_succeeds" # Arbitrary command returns 0
     GENERATED_TEST_PASSES = "generated_test_passes"  # Generated test must pass
+    LAYER_APPROPRIATE = "layer_appropriate"  # Logic placed in correct layer
     CUSTOM = "custom"                     # Custom verification
 
 
@@ -86,6 +89,19 @@ class TestSpecification:
 
 
 @dataclass
+class LayerConstraint:
+    """Constraint for LAYER_APPROPRIATE criterion.
+
+    Specifies what logic is being added and where it should/shouldn't go.
+    """
+
+    logic_type: str  # "business_logic", "routing", "parsing", etc.
+    appropriate_layers: list[str]  # Layers where this logic belongs
+    inappropriate_layers: list[str]  # Layers where this logic should NOT go
+    reason: str  # Why this placement matters
+
+
+@dataclass
 class AcceptanceCriterion:
     """A single testable criterion for contract fulfillment."""
 
@@ -98,6 +114,8 @@ class AcceptanceCriterion:
     command: str | None = None
     # Generated test specification (for GENERATED_TEST_PASSES)
     test_spec: TestSpecification | None = None
+    # Layer constraint (for LAYER_APPROPRIATE)
+    layer_constraint: LayerConstraint | None = None
     # Status
     verified: bool = False
     verification_output: str = ""
@@ -125,6 +143,8 @@ class AcceptanceCriterion:
                 result = self._verify_command_succeeds(sandbox)
             elif self.type == CriterionType.GENERATED_TEST_PASSES:
                 result = self._verify_generated_test_passes(sandbox)
+            elif self.type == CriterionType.LAYER_APPROPRIATE:
+                result = self._verify_layer_appropriate(sandbox)
             # else: Custom - cannot auto-verify, result stays False
         except Exception as e:
             self.verification_output = f"Error: {e}"
@@ -280,6 +300,86 @@ class AcceptanceCriterion:
 
         return returncode == 0
 
+    def _verify_layer_appropriate(self, sandbox: CodeSandbox) -> bool:
+        """Verify that logic is placed in the appropriate layer.
+
+        This criterion checks that:
+        1. The target file exists
+        2. The pattern (new logic) is found in the file
+        3. The file's layer type is in the appropriate_layers list
+        4. The file's layer type is NOT in the inappropriate_layers list
+
+        Uses file path patterns to infer layer type.
+        """
+        if not self.layer_constraint or not self.target_file:
+            self.verification_output = "Missing layer constraint or target file"
+            return False
+
+        constraint = self.layer_constraint
+
+        # Check file exists
+        try:
+            sandbox.read_file(self.target_file, start=1, end=1)
+        except FileNotFoundError:
+            self.verification_output = f"Target file not found: {self.target_file}"
+            return False
+
+        # If pattern specified, verify it's in the file
+        if self.pattern:
+            matches = sandbox.grep(
+                pattern=self.pattern,
+                glob_pattern=self.target_file,
+                max_results=1,
+            )
+            if not matches:
+                self.verification_output = f"Pattern not found in {self.target_file}"
+                return False
+
+        # Infer layer type from file path
+        file_lower = self.target_file.lower()
+        inferred_layer = self._infer_layer_from_path(file_lower)
+
+        # Check if layer is appropriate
+        if constraint.inappropriate_layers:
+            if inferred_layer in constraint.inappropriate_layers:
+                self.verification_output = (
+                    f"VIOLATION: {constraint.logic_type} placed in {inferred_layer} layer "
+                    f"({self.target_file}). {constraint.reason}"
+                )
+                return False
+
+        if constraint.appropriate_layers:
+            if inferred_layer not in constraint.appropriate_layers and inferred_layer != "unknown":
+                self.verification_output = (
+                    f"WARNING: {constraint.logic_type} placed in {inferred_layer} layer "
+                    f"({self.target_file}), expected one of: {constraint.appropriate_layers}. "
+                    f"{constraint.reason}"
+                )
+                # This is a warning, not a failure - we allow it but note it
+                return True
+
+        self.verification_output = (
+            f"Layer placement OK: {constraint.logic_type} in {inferred_layer} layer"
+        )
+        return True
+
+    def _infer_layer_from_path(self, file_path: str) -> str:
+        """Infer layer type from file path."""
+        layer_patterns = {
+            "rpc": ["rpc", "server", "handler", "endpoint"],
+            "agent": ["agent"],
+            "executor": ["executor", "runner", "worker"],
+            "storage": ["db", "database", "storage", "repository", "store"],
+            "service": ["service", "services/"],
+        }
+
+        for layer, patterns in layer_patterns.items():
+            for pattern in patterns:
+                if pattern in file_path:
+                    return layer
+
+        return "unknown"
+
 
 @dataclass
 class ContractStep:
@@ -398,12 +498,39 @@ class ContractBuilder:
         test_generator: "TestGenerator | None" = None,
         test_first: bool = True,
         project_memory: "ProjectMemoryStore | None" = None,
+        observer: "ExecutionObserver | None" = None,
+        session_logger: "SessionLogger | None" = None,
     ) -> None:
         self.sandbox = sandbox
         self._llm = llm
         self._test_generator = test_generator
         self._test_first = test_first
         self._project_memory = project_memory
+        self._observer = observer
+        self._session_logger = session_logger
+
+    def _notify(self, message: str) -> None:
+        """Notify observer of activity."""
+        if self._observer is not None:
+            self._observer.on_activity(message, module="ContractBuilder")
+
+    def _log(
+        self,
+        action: str,
+        message: str,
+        data: dict | None = None,
+        level: str = "INFO",
+    ) -> None:
+        """Log to session logger if available."""
+        if self._session_logger is not None:
+            if level == "DEBUG":
+                self._session_logger.log_debug("contract", action, message, data or {})
+            elif level == "WARN":
+                self._session_logger.log_warn("contract", action, message, data or {})
+            elif level == "ERROR":
+                self._session_logger.log_error("contract", action, message, data or {})
+            else:
+                self._session_logger.log_info("contract", action, message, data or {})
 
     def build_from_intent(self, intent: DiscoveredIntent) -> Contract:
         """Build a contract from discovered intent.
@@ -414,19 +541,56 @@ class ContractBuilder:
         Returns:
             A Contract with acceptance criteria and steps.
         """
+        # Log contract building start
+        self._log("build_start", "Starting contract build from intent", {
+            "intent_goal": intent.goal[:100],
+            "has_llm": self._llm is not None,
+            "test_first": self._test_first,
+            "has_test_generator": self._test_generator is not None,
+        })
+
         # Generate acceptance criteria from intent
+        self._notify("Generating acceptance criteria...")
         criteria = self._generate_criteria(intent)
+        self._notify(f"Generated {len(criteria)} acceptance criteria")
+
+        # Log criteria generation
+        self._log("criteria_generated", f"Generated {len(criteria)} acceptance criteria", {
+            "num_criteria": len(criteria),
+            "criteria_types": [c.type.value for c in criteria],
+            "criteria_descriptions": [c.description[:50] for c in criteria],
+        })
 
         # Decompose into steps
+        self._notify("Decomposing into atomic steps...")
         steps = self._decompose_into_steps(intent, criteria)
+        self._notify(f"Decomposed into {len(steps)} steps")
 
-        return Contract(
+        # Log decomposition
+        self._log("steps_decomposed", f"Decomposed into {len(steps)} steps", {
+            "num_steps": len(steps),
+            "step_actions": [s.action for s in steps],
+            "step_descriptions": [s.description[:50] for s in steps],
+        })
+
+        contract = Contract(
             id=_generate_id("contract"),
             intent_summary=intent.goal,
             acceptance_criteria=criteria,
             steps=steps,
             status=ContractStatus.DRAFT,
         )
+        self._notify(f"Contract built: {intent.goal[:50]}...")
+
+        # Log contract completion
+        self._log("build_complete", "Contract build complete", {
+            "contract_id": contract.id,
+            "intent_summary": contract.intent_summary[:100],
+            "num_criteria": len(contract.acceptance_criteria),
+            "num_steps": len(contract.steps),
+        })
+
+        return contract
 
     def build_gap_contract(
         self,
@@ -481,6 +645,7 @@ class ContractBuilder:
 
         # 1. Generate test specification if test_first is enabled
         if self._test_first and self._test_generator is not None:
+            self._notify("Generating test specification (test-first)...")
             try:
                 test_spec = self._test_generator.generate(intent)
                 criteria.append(
@@ -492,18 +657,22 @@ class ContractBuilder:
                         test_spec=test_spec,
                     )
                 )
+                self._notify(f"Test spec created: {test_spec.test_function}")
                 logger.info(
                     "Generated test specification: %s::%s",
                     test_spec.test_file,
                     test_spec.test_function,
                 )
             except Exception as e:
+                self._notify(f"Test generation skipped: {str(e)[:50]}")
                 logger.warning("Test generation failed: %s, using standard criteria", e)
 
         # 2. Add other criteria using LLM or heuristics
         if self._llm is not None:
+            self._notify("Using LLM to generate task-specific criteria...")
             criteria.extend(self._generate_criteria_with_llm(intent))
         else:
+            self._notify("Generating criteria using heuristics...")
             criteria.extend(self._generate_criteria_heuristic(intent))
 
         return criteria
@@ -512,57 +681,184 @@ class ContractBuilder:
         self,
         intent: DiscoveredIntent,
     ) -> list[AcceptanceCriterion]:
-        """Generate criteria without LLM."""
+        """Generate meaningful criteria without LLM.
+
+        Analyzes the intent to generate task-specific acceptance criteria
+        rather than generic "code compiles" nonsense.
+        """
         criteria = []
+        prompt_lower = intent.prompt_intent.raw_prompt.lower()
         action = intent.prompt_intent.action_verb.lower()
         target = intent.prompt_intent.target.lower()
 
-        # Based on action verb, generate appropriate criteria
-        if action in ("create", "add", "write", "implement"):
-            if target in ("function", "method"):
-                criteria.append(
-                    AcceptanceCriterion(
-                        id=_generate_id("criterion"),
-                        type=CriterionType.FUNCTION_EXISTS,
-                        description=f"Function exists in codebase",
-                        pattern=target,  # Will be refined
-                    )
-                )
-            elif target in ("class",):
-                criteria.append(
-                    AcceptanceCriterion(
-                        id=_generate_id("criterion"),
-                        type=CriterionType.CLASS_EXISTS,
-                        description=f"Class exists in codebase",
-                        pattern=target,
-                    )
-                )
-            elif target in ("file", "module"):
-                criteria.append(
-                    AcceptanceCriterion(
-                        id=_generate_id("criterion"),
-                        type=CriterionType.FILE_EXISTS,
-                        description=f"File exists",
-                    )
-                )
-            elif target in ("test",):
-                criteria.append(
-                    AcceptanceCriterion(
-                        id=_generate_id("criterion"),
-                        type=CriterionType.TESTS_PASS,
-                        description="Tests pass",
-                        command="pytest",
-                    )
-                )
+        # Detect project type from prompt keywords
+        is_game = any(kw in prompt_lower for kw in [
+            "game", "pygame", "arcade", "asteroids", "snake", "pong",
+            "tetris", "breakout", "space invaders", "platformer"
+        ])
+        is_web = any(kw in prompt_lower for kw in [
+            "flask", "django", "fastapi", "api", "endpoint", "web",
+            "rest", "http", "server", "route"
+        ])
+        is_cli = any(kw in prompt_lower for kw in [
+            "cli", "command line", "argparse", "click", "terminal"
+        ])
+        is_gui = any(kw in prompt_lower for kw in [
+            "gui", "tkinter", "qt", "window", "ui", "interface"
+        ])
 
-        # Always add a "code compiles" criterion
-        criteria.append(
-            AcceptanceCriterion(
-                id=_generate_id("criterion"),
-                type=CriterionType.CODE_COMPILES,
-                description="Code compiles without errors",
+        # Generate criteria based on detected project type
+        if is_game:
+            # Game-specific criteria - these are what actually matter
+            criteria.extend([
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.FILE_EXISTS,
+                    description="Main game file exists (main.py or game.py)",
+                    target_file="main.py",
+                ),
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.FILE_CONTAINS,
+                    description="Game loop implemented (pygame.display, while running)",
+                    target_file="*.py",
+                    pattern=r"pygame\.display|while.*running|game.*loop",
+                ),
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.FILE_CONTAINS,
+                    description="Player/ship controls respond to keyboard input",
+                    target_file="*.py",
+                    pattern=r"pygame\.K_|KEYDOWN|key.*pressed|move|velocity",
+                ),
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.COMMAND_SUCCEEDS,
+                    description="Game runs without crashing (syntax check)",
+                    command="python -m py_compile main.py || python -m py_compile game.py",
+                ),
+            ])
+
+            # Add asteroids-specific criteria
+            if "asteroid" in prompt_lower:
+                criteria.extend([
+                    AcceptanceCriterion(
+                        id=_generate_id("criterion"),
+                        type=CriterionType.FILE_CONTAINS,
+                        description="Asteroid class or spawning logic exists",
+                        target_file="*.py",
+                        pattern=r"class.*Asteroid|asteroid|spawn|enemy",
+                    ),
+                    AcceptanceCriterion(
+                        id=_generate_id("criterion"),
+                        type=CriterionType.FILE_CONTAINS,
+                        description="Collision detection implemented",
+                        target_file="*.py",
+                        pattern=r"collide|collision|hit|intersect|rect",
+                    ),
+                ])
+
+        elif is_web:
+            criteria.extend([
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.FILE_EXISTS,
+                    description="Main app file exists",
+                    target_file="app.py",
+                ),
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.FILE_CONTAINS,
+                    description="Route/endpoint defined",
+                    target_file="*.py",
+                    pattern=r"@app\.route|@router\.|def.*endpoint|FastAPI|Flask",
+                ),
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.COMMAND_SUCCEEDS,
+                    description="App imports without errors",
+                    command="python -c 'import app' || python -c 'import main'",
+                ),
+            ])
+
+        elif is_cli:
+            criteria.extend([
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.FILE_CONTAINS,
+                    description="CLI argument parsing implemented",
+                    target_file="*.py",
+                    pattern=r"argparse|click|typer|sys\.argv",
+                ),
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.COMMAND_SUCCEEDS,
+                    description="CLI runs with --help",
+                    command="python main.py --help",
+                ),
+            ])
+
+        elif is_gui:
+            criteria.extend([
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.FILE_CONTAINS,
+                    description="GUI window/application created",
+                    target_file="*.py",
+                    pattern=r"Tk\(\)|QApplication|QMainWindow|tkinter|PyQt|PySide",
+                ),
+            ])
+
+        else:
+            # Generic but still meaningful criteria based on action/target
+            if action in ("create", "add", "write", "implement", "make", "build"):
+                if target in ("function", "method"):
+                    criteria.append(
+                        AcceptanceCriterion(
+                            id=_generate_id("criterion"),
+                            type=CriterionType.FUNCTION_EXISTS,
+                            description=f"Function implemented and callable",
+                            pattern=target,
+                        )
+                    )
+                elif target in ("class",):
+                    criteria.append(
+                        AcceptanceCriterion(
+                            id=_generate_id("criterion"),
+                            type=CriterionType.CLASS_EXISTS,
+                            description=f"Class implemented with required methods",
+                            pattern=target,
+                        )
+                    )
+                elif target in ("test",):
+                    criteria.append(
+                        AcceptanceCriterion(
+                            id=_generate_id("criterion"),
+                            type=CriterionType.TESTS_PASS,
+                            description="Tests pass",
+                            command="pytest",
+                        )
+                    )
+                else:
+                    # For unrecognized targets, at least require the file to exist
+                    criteria.append(
+                        AcceptanceCriterion(
+                            id=_generate_id("criterion"),
+                            type=CriterionType.FILE_EXISTS,
+                            description=f"Implementation file created",
+                            target_file="main.py",
+                        )
+                    )
+
+        # Only add "code compiles" if we have no other criteria (last resort)
+        if not criteria:
+            criteria.append(
+                AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=CriterionType.CODE_COMPILES,
+                    description="Code compiles without errors",
+                )
             )
-        )
 
         return criteria
 
@@ -577,20 +873,34 @@ Given an intent, output JSON with testable criteria:
 {
     "criteria": [
         {
-            "type": "file_exists|file_contains|tests_pass|function_exists|class_exists",
+            "type": "file_exists|file_contains|tests_pass|function_exists|class_exists|layer_appropriate",
             "description": "Human-readable description",
             "target_file": "path/to/file.py",  // if applicable
             "pattern": "regex or name",  // if applicable
-            "command": "test command"  // if applicable
+            "command": "test command",  // if applicable
+            "layer_constraint": {  // REQUIRED for layer_appropriate type
+                "logic_type": "business_logic|routing|parsing|etc",
+                "appropriate_layers": ["agent", "service"],  // where it SHOULD go
+                "inappropriate_layers": ["rpc", "storage"],  // where it should NOT go
+                "reason": "Why this placement matters"
+            }
         }
     ]
 }
+
+LAYER TYPES:
+- rpc: Request parsing, routing, response formatting. NOT business logic.
+- agent: Decision making, orchestration, state management.
+- executor: Running plans, low-level execution.
+- storage: Data persistence. NOT business logic.
+- service: Business logic, domain operations.
 
 Make criteria:
 - Specific and testable
 - Minimal but complete
 - Focused on the actual change
-- RESPECT any PROJECT DECISIONS listed (these are non-negotiable)"""
+- RESPECT any PROJECT DECISIONS listed (these are non-negotiable)
+- Include layer_appropriate criterion when adding business logic to ensure correct placement"""
 
         # Build project decisions section if available
         decisions_section = ""
@@ -612,6 +922,20 @@ PROJECT DECISIONS (must respect):
             except Exception as e:
                 logger.debug("Failed to get project decisions: %s", e)
 
+        # Build layer responsibilities section
+        layer_section = ""
+        if intent.codebase_intent.layer_responsibilities:
+            layer_lines = []
+            for lr in intent.codebase_intent.layer_responsibilities[:5]:
+                layer_lines.append(f"- {lr.file_path} ({lr.layer_name})")
+                if lr.not_responsible_for:
+                    layer_lines.append(f"  NOT: {', '.join(lr.not_responsible_for[:2])}")
+            if layer_lines:
+                layer_section = f"""
+LAYER RESPONSIBILITIES:
+{chr(10).join(layer_lines)}
+"""
+
         context = f"""
 GOAL: {intent.goal}
 WHAT: {intent.what}
@@ -619,15 +943,33 @@ ACTION: {intent.prompt_intent.action_verb}
 TARGET: {intent.prompt_intent.target}
 LANGUAGE: {intent.codebase_intent.language}
 RELATED FILES: {', '.join(intent.codebase_intent.related_files[:5])}
-{decisions_section}"""
+{decisions_section}{layer_section}"""
+
+        # Log LLM call
+        self._log("llm_call_start", "Starting criteria generation LLM call", {
+            "purpose": "generate_criteria",
+            "goal": intent.goal[:100],
+            "context_length": len(context),
+            "system_prompt_length": len(system),
+        })
 
         try:
+            self._notify("  Sending to LLM (criteria generation)...")
             response = self._llm.chat_json(  # type: ignore
                 system=system,
                 user=context,
                 temperature=0.2,
             )
+            self._notify(f"  LLM response: {len(response)} chars")
+
+            # Log raw response
+            self._log("llm_response", "Received criteria generation response", {
+                "response_length": len(response),
+                "response": response,
+            })
+
             data = json.loads(response)
+            self._notify(f"  Parsed {len(data.get('criteria', []))} criteria from LLM")
 
             criteria = []
             for c in data.get("criteria", []):
@@ -636,16 +978,28 @@ RELATED FILES: {', '.join(intent.codebase_intent.related_files[:5])}
                 except ValueError:
                     ctype = CriterionType.CUSTOM
 
-                criteria.append(
-                    AcceptanceCriterion(
-                        id=_generate_id("criterion"),
-                        type=ctype,
-                        description=c.get("description", ""),
-                        target_file=c.get("target_file"),
-                        pattern=c.get("pattern"),
-                        command=c.get("command"),
+                # Parse layer constraint if present
+                layer_constraint = None
+                if c.get("layer_constraint"):
+                    lc = c["layer_constraint"]
+                    layer_constraint = LayerConstraint(
+                        logic_type=lc.get("logic_type", "unknown"),
+                        appropriate_layers=lc.get("appropriate_layers", []),
+                        inappropriate_layers=lc.get("inappropriate_layers", []),
+                        reason=lc.get("reason", ""),
                     )
+
+                criterion = AcceptanceCriterion(
+                    id=_generate_id("criterion"),
+                    type=ctype,
+                    description=c.get("description", ""),
+                    target_file=c.get("target_file"),
+                    pattern=c.get("pattern"),
+                    command=c.get("command"),
+                    layer_constraint=layer_constraint,
                 )
+                criteria.append(criterion)
+                self._notify(f"    → {ctype.value}: {c.get('description', '')[:40]}...")
 
             # Always add code compiles if not present
             if not any(c.type == CriterionType.CODE_COMPILES for c in criteria):
@@ -657,9 +1011,24 @@ RELATED FILES: {', '.join(intent.codebase_intent.related_files[:5])}
                     )
                 )
 
+            # Log parsed criteria
+            self._log("criteria_parsed", f"Parsed {len(criteria)} criteria from LLM", {
+                "num_criteria": len(criteria),
+                "criteria_types": [c.type.value for c in criteria],
+                "criteria": [
+                    {"type": c.type.value, "desc": c.description[:50], "file": c.target_file}
+                    for c in criteria
+                ],
+            })
+
             return criteria
 
         except Exception as e:
+            self._notify(f"LLM criteria failed: {str(e)[:50]}... using heuristics")
+            self._log("llm_error", f"Criteria generation failed: {e}", {
+                "error": str(e),
+                "fallback": "heuristic",
+            }, level="WARN")
             logger.warning("LLM criteria generation failed: %s", e)
             return self._generate_criteria_heuristic(intent)
 
@@ -747,6 +1116,7 @@ RELATED FILES: {', '.join(intent.codebase_intent.related_files[:5])}
         criteria: list[AcceptanceCriterion],
     ) -> list[ContractStep]:
         """Decompose using LLM."""
+        self._notify("Using LLM to decompose task into steps...")
         system = """You decompose code tasks into discrete, atomic steps.
 
 Each step should be the smallest complete unit of work.
@@ -778,30 +1148,66 @@ MUST SATISFY:
 {criteria_desc}
 """
 
+        # Log LLM call
+        self._log("llm_call_start", "Starting decomposition LLM call", {
+            "purpose": "decompose_steps",
+            "goal": intent.goal[:100],
+            "num_criteria": len(criteria),
+            "context_length": len(context),
+        })
+
         try:
+            self._notify("  Sending to LLM (decomposition)...")
             response = self._llm.chat_json(  # type: ignore
                 system=system,
                 user=context,
                 temperature=0.2,
             )
+            self._notify(f"  LLM response: {len(response)} chars")
+
+            # Log raw response
+            self._log("llm_response", "Received decomposition response", {
+                "response_length": len(response),
+                "response": response,
+            })
+
             data = json.loads(response)
+            self._notify(f"  Parsed {len(data.get('steps', []))} steps from LLM")
 
             steps = []
             for s in data.get("steps", []):
-                steps.append(
-                    ContractStep(
-                        id=_generate_id("step"),
-                        description=s.get("description", ""),
-                        target_criteria=[c.id for c in criteria],
-                        action=s.get("action", "edit_file"),
-                        target_file=s.get("target_file"),
-                        command=s.get("command"),
-                    )
+                step = ContractStep(
+                    id=_generate_id("step"),
+                    description=s.get("description", ""),
+                    target_criteria=[c.id for c in criteria],
+                    action=s.get("action", "edit_file"),
+                    target_file=s.get("target_file"),
+                    command=s.get("command"),
                 )
+                steps.append(step)
+                action = s.get("action", "edit_file")
+                target = s.get("target_file", "")
+                self._notify(f"    → [{action}] {s.get('description', '')[:35]}...")
+                if target:
+                    self._notify(f"      file: {target}")
+
+            # Log parsed steps
+            self._log("steps_parsed", f"Parsed {len(steps)} steps from LLM", {
+                "num_steps": len(steps),
+                "steps": [
+                    {"action": s.action, "desc": s.description[:50], "file": s.target_file}
+                    for s in steps
+                ],
+            })
 
             return steps
 
         except Exception as e:
+            self._notify(f"LLM decomposition failed: {str(e)[:50]}... using heuristics")
+            self._log("llm_error", f"Decomposition failed: {e}", {
+                "error": str(e),
+                "fallback": "heuristic",
+            }, level="WARN")
             logger.warning("LLM decomposition failed: %s", e)
             return self._decompose_heuristic(intent, criteria)
 

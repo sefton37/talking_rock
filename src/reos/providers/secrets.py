@@ -145,7 +145,8 @@ def get_keyring_backend_name() -> str:
 
         backend = keyring.get_keyring()
         return backend.__class__.__name__
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to get keyring backend name: %s", e)
         return "Unknown"
 
 

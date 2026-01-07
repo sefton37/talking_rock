@@ -4,7 +4,6 @@ Intent is discovered by synthesizing understanding from:
 1. The user's prompt (what they explicitly asked for)
 2. The Play context (Act goals, Scene context, historical Beats)
 3. The codebase state (existing patterns, architecture, conventions)
-4. The Repository Map (semantic code understanding - symbols, dependencies)
 
 This multi-source approach prevents hallucination by grounding intent
 in concrete, observable reality.
@@ -19,10 +18,11 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from reos.code_mode.api_docs import APIDocumentation, APIDocumentationLookup
+    from reos.code_mode.planner import CodeTaskPlan
     from reos.code_mode.project_memory import ProjectMemoryStore
-    from reos.code_mode.repo_map import RepoMap
     from reos.code_mode.sandbox import CodeSandbox
+    from reos.code_mode.session_logger import SessionLogger
+    from reos.code_mode.streaming import ExecutionObserver
     from reos.providers import LLMProvider
     from reos.play_fs import Act
 
@@ -53,6 +53,21 @@ class PlayIntent:
 
 
 @dataclass
+class LayerResponsibility:
+    """Describes what a layer/module is responsible for.
+
+    This prevents misplacement of logic by making layer boundaries explicit.
+    Extracted from module docstrings and inferred from code patterns.
+    """
+
+    file_path: str            # Path to the module
+    layer_name: str           # "rpc", "agent", "executor", "storage", etc.
+    responsibilities: list[str]  # What this layer DOES
+    not_responsible_for: list[str]  # What this layer should NOT do
+    source: str               # "docstring", "inferred", "pattern"
+
+
+@dataclass
 class CodebaseIntent:
     """Intent derived from codebase analysis."""
 
@@ -62,11 +77,8 @@ class CodebaseIntent:
     related_files: list[str]  # Files likely relevant to this task
     existing_patterns: list[str]  # Patterns to follow
     test_patterns: str        # How tests are structured
-    # RepoMap-enhanced fields
-    relevant_symbols: list[str] = field(default_factory=list)  # Symbol names from repo map
-    symbol_context: str = ""  # Formatted context from repo map
-    # API Documentation (prevents hallucination)
-    api_documentation: list["APIDocumentation"] = field(default_factory=list)
+    # Layer responsibilities (prevents misplacement)
+    layer_responsibilities: list[LayerResponsibility] = field(default_factory=list)
 
 
 @dataclass
@@ -93,6 +105,9 @@ class DiscoveredIntent:
     ambiguities: list[str]    # Things that are unclear
     assumptions: list[str]    # Assumptions being made
     discovered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Transparency - what steps were taken during discovery
+    discovery_steps: list[str] = field(default_factory=list)  # Log of what ReOS did
 
     def summary(self) -> str:
         """Generate human-readable summary of discovered intent."""
@@ -134,11 +149,6 @@ class IntentDiscoverer:
     Uses different analytical perspectives to build a complete picture
     of what the user wants, grounded in observable evidence.
 
-    When a RepoMap is provided, uses semantic code understanding for:
-    - Finding related files via symbol search
-    - Getting relevant context within token budget
-    - Understanding dependencies between files
-
     When a ProjectMemoryStore is provided, recalls project-specific:
     - Decisions ("We use dataclasses, not TypedDict")
     - Patterns ("Tests go in tests/, named test_*.py")
@@ -149,21 +159,45 @@ class IntentDiscoverer:
         self,
         sandbox: "CodeSandbox",
         llm: "LLMProvider | None" = None,
-        repo_map: "RepoMap | None" = None,
         project_memory: "ProjectMemoryStore | None" = None,
-        api_lookup: "APIDocumentationLookup | None" = None,
+        observer: "ExecutionObserver | None" = None,
+        session_logger: "SessionLogger | None" = None,
     ) -> None:
         self.sandbox = sandbox
         self._llm = llm
-        self._repo_map = repo_map
         self._project_memory = project_memory
-        self._api_lookup = api_lookup
+        self._observer = observer
+        self._session_logger = session_logger
+
+    def _log(
+        self,
+        action: str,
+        message: str,
+        data: dict | None = None,
+        level: str = "INFO",
+    ) -> None:
+        """Log to session logger if available."""
+        if self._session_logger is not None:
+            if level == "DEBUG":
+                self._session_logger.log_debug("intent", action, message, data or {})
+            elif level == "WARN":
+                self._session_logger.log_warn("intent", action, message, data or {})
+            elif level == "ERROR":
+                self._session_logger.log_error("intent", action, message, data or {})
+            else:
+                self._session_logger.log_info("intent", action, message, data or {})
+
+    def _notify(self, message: str) -> None:
+        """Notify observer of activity."""
+        if self._observer is not None:
+            self._observer.on_activity(message, module="IntentDiscoverer")
 
     def discover(
         self,
         prompt: str,
         act: Act,
         knowledge_context: str = "",
+        plan_context: "CodeTaskPlan | None" = None,
     ) -> DiscoveredIntent:
         """Discover intent from all available sources.
 
@@ -171,27 +205,129 @@ class IntentDiscoverer:
             prompt: The user's explicit request.
             act: The active Act with context.
             knowledge_context: Optional knowledge base context.
+            plan_context: Optional pre-computed plan from CodePlanner.
+                         When provided, reuses the plan's file analysis
+                         to enhance codebase intent.
 
         Returns:
             DiscoveredIntent synthesizing all sources.
         """
-        # Phase 1: Extract intent from each source
-        prompt_intent = self._analyze_prompt(prompt)
-        play_intent = self._analyze_play_context(act, knowledge_context)
-        codebase_intent = self._analyze_codebase(prompt)
+        # Track what we're doing for transparency
+        discovery_steps: list[str] = []
 
-        # Phase 1.5: Inject project memory context
+        # Log discovery start
+        self._log("discovery_start", "Starting intent discovery", {
+            "prompt_preview": prompt[:200],
+            "prompt_length": len(prompt),
+            "act_title": act.title,
+            "has_llm": self._llm is not None,
+            "has_project_memory": self._project_memory is not None,
+        })
+
+        def log_step(msg: str) -> None:
+            """Log a discovery step and notify observer."""
+            discovery_steps.append(msg)
+            self._notify(msg.split("] ", 1)[-1] if "] " in msg else msg)
+            self._log("discovery_step", msg, {}, level="DEBUG")
+
+        # Phase 1: Extract intent from each source
+        log_step(f"Analyzing prompt: '{prompt[:50]}...'")
+        prompt_intent = self._analyze_prompt(prompt)
+        llm_status = "LLM" if self._llm else "heuristic"
+        log_step(f"Extracted action='{prompt_intent.action_verb}', target='{prompt_intent.target}' ({llm_status})")
+
+        log_step(f"Reading Act context: '{act.title}'")
+        play_intent = self._analyze_play_context(act, knowledge_context)
+        log_step(f"Act goal: '{play_intent.act_goal}', artifact: '{play_intent.act_artifact}'")
+
+        log_step("Scanning repository for related files...")
+        codebase_intent = self._analyze_codebase(prompt)
+        log_step(f"Found {len(codebase_intent.related_files)} related files, language: {codebase_intent.language}")
+
+        # Phase 1.5: Inject plan context if available
+        if plan_context is not None:
+            log_step(f"Injecting context from {len(plan_context.steps)} plan steps")
+            self._inject_plan_context(plan_context, codebase_intent)
+
+        # Phase 1.6: Inject project memory context
         if self._project_memory is not None:
+            log_step("Checking project memory for patterns and decisions...")
             self._inject_project_memory(
                 prompt, act.repo_path, play_intent, codebase_intent
             )
 
         # Phase 2: Synthesize into unified intent
-        return self._synthesize_intent(
+        log_step("Synthesizing all sources into unified intent...")
+        intent = self._synthesize_intent(
             prompt=prompt,
             prompt_intent=prompt_intent,
             play_intent=play_intent,
             codebase_intent=codebase_intent,
+        )
+
+        # Attach discovery steps to the intent
+        log_step(f"Goal: '{intent.goal[:60]}...' (confidence: {intent.confidence:.0%})")
+        intent.discovery_steps = discovery_steps
+
+        # Log discovery completion
+        self._log("discovery_complete", "Intent discovery complete", {
+            "goal": intent.goal[:100],
+            "confidence": intent.confidence,
+            "num_ambiguities": len(intent.ambiguities),
+            "num_assumptions": len(intent.assumptions),
+            "num_constraints": len(intent.how_constraints),
+            "num_related_files": len(codebase_intent.related_files),
+            "discovery_steps": len(discovery_steps),
+        })
+
+        return intent
+
+    def _inject_plan_context(
+        self,
+        plan: "CodeTaskPlan",
+        codebase_intent: CodebaseIntent,
+    ) -> None:
+        """Inject pre-computed plan context into codebase intent.
+
+        The CodePlanner already analyzed the repository to create the plan.
+        Reuse that analysis rather than rediscovering from scratch.
+
+        Args:
+            plan: The pre-computed plan from CodePlanner.
+            codebase_intent: The codebase intent to enhance.
+        """
+        # Add files from plan to related_files
+        all_files = set(codebase_intent.related_files)
+        all_files.update(plan.context_files)
+        all_files.update(plan.files_to_modify)
+        all_files.update(plan.files_to_create)
+        codebase_intent.related_files = list(all_files)[:15]
+
+        # Extract patterns from plan steps
+        step_patterns = []
+        for step in plan.steps:
+            if step.target_path:
+                # Infer patterns from step descriptions
+                desc_lower = step.description.lower()
+                if "test" in desc_lower:
+                    step_patterns.append("Write tests for new functionality")
+                if "class" in desc_lower:
+                    step_patterns.append("Use class-based structure")
+                if "function" in desc_lower or "def " in desc_lower:
+                    step_patterns.append("Use function-based structure")
+
+        # Add unique patterns
+        existing = set(codebase_intent.existing_patterns)
+        for pattern in step_patterns:
+            if pattern not in existing:
+                codebase_intent.existing_patterns.append(pattern)
+                existing.add(pattern)
+
+        logger.info(
+            "Injected plan context: %d files, %d patterns from %d steps",
+            len(codebase_intent.related_files),
+            len(codebase_intent.existing_patterns),
+            len(plan.steps),
         )
 
     def _analyze_prompt(self, prompt: str) -> PromptIntent:
@@ -226,6 +362,9 @@ class IntentDiscoverer:
 
     def _analyze_prompt_with_llm(self, prompt: str) -> PromptIntent:
         """Extract intent from prompt using LLM."""
+        self._notify("Calling LLM to analyze prompt...")
+        self._notify(f"  Prompt length: {len(prompt)} chars")
+
         system = """You analyze user requests to extract structured intent.
 Output JSON with these fields:
 {
@@ -236,13 +375,40 @@ Output JSON with these fields:
     "summary": "one clear sentence summarizing the request"
 }"""
 
+        # Log LLM call details
+        self._log("llm_call_start", "Starting prompt analysis LLM call", {
+            "purpose": "extract_intent",
+            "prompt_length": len(prompt),
+            "prompt_preview": prompt[:200],
+            "system_prompt_length": len(system),
+        })
+
         try:
+            self._notify("  Sending to LLM (intent extraction)...")
             response = self._llm.chat_json(  # type: ignore
                 system=system,
                 user=prompt,
                 temperature=0.1,
             )
+            self._notify(f"  LLM response: {len(response)} chars")
+
+            # Log raw response
+            self._log("llm_response", "Received prompt analysis response", {
+                "response_length": len(response),
+                "response": response,
+            })
+
             data = json.loads(response)
+            self._notify(f"  Parsed: action={data.get('action_verb')}, target={data.get('target')}")
+
+            # Log parsed result
+            self._log("intent_extracted", "Extracted prompt intent", {
+                "action_verb": data.get("action_verb"),
+                "target": data.get("target"),
+                "constraints": data.get("constraints", []),
+                "summary": data.get("summary", "")[:100],
+            })
+
             return PromptIntent(
                 raw_prompt=prompt,
                 action_verb=data.get("action_verb", "implement"),
@@ -252,6 +418,11 @@ Output JSON with these fields:
                 summary=data.get("summary", prompt[:200]),
             )
         except Exception as e:
+            self._notify(f"LLM prompt analysis failed: {str(e)[:50]}... using heuristics")
+            self._log("llm_error", f"Prompt analysis failed: {e}", {
+                "error": str(e),
+                "fallback": "heuristic",
+            }, level="WARN")
             logger.warning("LLM prompt analysis failed: %s", e)
             return self._analyze_prompt_heuristic(prompt)
 
@@ -274,8 +445,8 @@ Output JSON with these fields:
         try:
             commits = self.sandbox.recent_commits(count=5)
             recent_work = [c.message for c in commits]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to get recent git commits: %s", e)
 
         # Parse knowledge hints
         knowledge_hints = []
@@ -350,88 +521,52 @@ Output JSON with these fields:
             logger.warning("Failed to inject project memory: %s", e)
 
     def _analyze_codebase(self, prompt: str) -> CodebaseIntent:
-        """Extract intent from codebase analysis.
-
-        If RepoMap is available and indexed, uses semantic search
-        to find relevant code. Otherwise falls back to grep-based search.
-        """
+        """Extract intent from codebase analysis using grep-based search."""
         # Detect language
+        self._notify("Detecting project language...")
         language = self._detect_language()
+        self._notify(f"  Language: {language}")
 
         # Detect architecture style
+        self._notify("Analyzing architecture style...")
         architecture = self._detect_architecture()
+        if architecture:
+            self._notify(f"  Architecture: {architecture}")
 
-        # Find related files - use RepoMap if available
+        # Find related files
+        self._notify("Scanning for related files...")
         related = self._find_related_files(prompt)
+        if related:
+            self._notify(f"  Found {len(related)} related files:")
+            for f in related[:5]:  # Show first 5
+                self._notify(f"    → {f}")
+            if len(related) > 5:
+                self._notify(f"    ... and {len(related) - 5} more")
+        else:
+            self._notify("  No related files found (new project)")
 
         # Detect conventions
+        self._notify("Detecting coding conventions...")
         conventions = self._detect_conventions()
+        if conventions:
+            self._notify(f"  Conventions: {', '.join(conventions[:3])}")
 
         # Detect test patterns
         test_patterns = self._detect_test_patterns()
+        if test_patterns:
+            self._notify(f"  Test patterns: {', '.join(test_patterns[:2])}")
 
-        # Get RepoMap-enhanced context if available
-        relevant_symbols: list[str] = []
-        symbol_context = ""
-        existing_patterns: list[str] = []
-
-        if self._repo_map is not None:
-            try:
-                # Get relevant context using RepoMap
-                symbol_context = self._repo_map.get_relevant_context(
-                    prompt, token_budget=600
-                )
-
-                # Find relevant symbols
-                symbols = self._find_symbols_for_prompt(prompt)
-                relevant_symbols = [s.qualified_name for s in symbols[:10]]
-
-                # Extract patterns from found symbols
-                existing_patterns = self._extract_patterns_from_symbols(symbols)
-
-            except Exception as e:
-                logger.debug("RepoMap analysis failed: %s", e)
-
-        # Look up API documentation to prevent hallucination
-        api_documentation: list["APIDocumentation"] = []
-        if self._api_lookup is not None:
-            try:
-                # Extract symbols from prompt
-                prompt_symbols = self._api_lookup.extract_symbols_from_prompt(prompt)
-
-                # Also extract from related files
-                for file_path in related[:3]:  # Limit to avoid slowdown
-                    try:
-                        content = self.sandbox.read_file(file_path)
-                        code_symbols = self._api_lookup.extract_symbols_from_code(
-                            content, language
-                        )
-                        prompt_symbols.extend(code_symbols)
-                    except Exception:
-                        pass
-
-                # Deduplicate and lookup
-                unique_symbols = list(set(prompt_symbols))[:15]
-                api_documentation = self._api_lookup.get_documentation_batch(
-                    unique_symbols, language
-                )
-                logger.debug(
-                    "Found API documentation for %d symbols",
-                    len(api_documentation),
-                )
-            except Exception as e:
-                logger.debug("API documentation lookup failed: %s", e)
+        # Detect layer responsibilities for related files
+        layer_responsibilities = self._detect_layer_responsibilities(related)
 
         return CodebaseIntent(
             language=language,
             architecture_style=architecture,
             conventions=conventions,
             related_files=related,
-            existing_patterns=existing_patterns,
+            existing_patterns=[],
             test_patterns=test_patterns,
-            relevant_symbols=relevant_symbols,
-            symbol_context=symbol_context,
-            api_documentation=api_documentation,
+            layer_responsibilities=layer_responsibilities,
         )
 
     def _detect_language(self) -> str:
@@ -469,55 +604,25 @@ Output JSON with these fields:
         return "flat"
 
     def _find_related_files(self, prompt: str) -> list[str]:
-        """Find files likely relevant to the request.
-
-        Uses RepoMap for semantic search when available, falling back
-        to grep-based search otherwise.
-        """
+        """Find files likely relevant to the request using grep-based search."""
         related: list[str] = []
 
-        # Try RepoMap first for better context
-        if self._repo_map is not None:
-            try:
-                # Find symbols related to the prompt
-                symbols = self._find_symbols_for_prompt(prompt)
-                for sym in symbols:
-                    if hasattr(sym, "location") and hasattr(sym.location, "file_path"):
-                        file_path = sym.location.file_path
-                        if file_path not in related:
-                            related.append(file_path)
-
-                # Also find callers of those symbols for broader context
-                for sym in symbols[:3]:  # Limit to avoid too many lookups
-                    if hasattr(sym, "name") and hasattr(sym, "location"):
-                        try:
-                            callers = self._repo_map.find_callers(
-                                sym.name, sym.location.file_path
-                            )
-                            for caller in callers[:2]:
-                                if hasattr(caller, "file_path"):
-                                    if caller.file_path not in related:
-                                        related.append(caller.file_path)
-                        except Exception:
-                            pass
-
-                if related:
-                    return related[:10]
-            except Exception as e:
-                logger.debug("RepoMap file search failed: %s", e)
-
-        # Fallback: grep-based search
+        # Simple grep-based search
         words = prompt.lower().split()
         for word in words:
-            # Search for files matching the word
-            matches = self.sandbox.grep(
-                pattern=word,
-                glob_pattern="**/*.py",
-                max_results=5,
-            )
-            for m in matches:
-                if m.path not in related:
-                    related.append(m.path)
+            if len(word) < 3:  # Skip short words
+                continue
+            try:
+                matches = self.sandbox.grep(
+                    pattern=word,
+                    glob_pattern="**/*.py",
+                    max_results=5,
+                )
+                for m in matches:
+                    if m.path not in related:
+                        related.append(m.path)
+            except Exception as e:
+                logger.debug("Grep search failed for '%s': %s", word, e)
 
         return related[:10]  # Limit to 10
 
@@ -534,8 +639,8 @@ Output JSON with these fields:
             )
             if type_hints:
                 conventions.append("Uses type hints")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to detect type hints convention: %s", e)
 
         # Check for docstrings
         try:
@@ -546,8 +651,8 @@ Output JSON with these fields:
             )
             if docstrings:
                 conventions.append("Uses docstrings")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to detect docstring convention: %s", e)
 
         # Check for dataclasses
         try:
@@ -558,8 +663,8 @@ Output JSON with these fields:
             )
             if dataclasses:
                 conventions.append("Uses dataclasses")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to detect dataclass convention: %s", e)
 
         return conventions
 
@@ -575,104 +680,217 @@ Output JSON with these fields:
 
         return "unknown"
 
-    def _find_symbols_for_prompt(self, prompt: str) -> list[Any]:
-        """Find symbols relevant to the prompt using RepoMap.
+    def _detect_layer_responsibilities(
+        self,
+        related_files: list[str],
+    ) -> list[LayerResponsibility]:
+        """Detect layer responsibilities for files.
 
-        Extracts keywords from the prompt and searches for matching symbols.
+        Extracts responsibilities from:
+        1. Module docstrings that declare responsibilities
+        2. Inferred patterns from file paths and code structure
+        3. Common layer naming conventions
 
-        Args:
-            prompt: The user's request.
-
-        Returns:
-            List of Symbol objects from the repo map.
+        This helps prevent misplacement of logic by making layer
+        boundaries explicit.
         """
-        if self._repo_map is None:
-            return []
+        responsibilities: list[LayerResponsibility] = []
 
-        symbols = []
+        # Layer patterns to look for in file paths
+        layer_patterns = {
+            "rpc": {
+                "patterns": ["rpc", "server", "handler", "endpoint", "api/"],
+                "responsibilities": [
+                    "Parse and validate incoming requests",
+                    "Route requests to appropriate handlers",
+                    "Format responses",
+                ],
+                "not_responsible_for": [
+                    "Business logic",
+                    "Decision making",
+                    "State management",
+                    "Domain operations",
+                ],
+            },
+            "agent": {
+                "patterns": ["agent", "orchestrat", "coordinator"],
+                "responsibilities": [
+                    "Orchestrate request handling",
+                    "Make routing decisions",
+                    "Manage conversation state",
+                    "Coordinate between subsystems",
+                ],
+                "not_responsible_for": [
+                    "Low-level execution",
+                    "Request parsing",
+                    "Response formatting",
+                ],
+            },
+            "executor": {
+                "patterns": ["executor", "runner", "worker", "engine"],
+                "responsibilities": [
+                    "Execute planned operations",
+                    "Report execution progress",
+                    "Handle execution errors",
+                ],
+                "not_responsible_for": [
+                    "Planning what to execute",
+                    "User interaction",
+                    "Request routing",
+                ],
+            },
+            "storage": {
+                "patterns": ["db", "database", "storage", "repository", "store"],
+                "responsibilities": [
+                    "Persist and retrieve data",
+                    "Manage database connections",
+                    "Handle data migrations",
+                ],
+                "not_responsible_for": [
+                    "Business logic",
+                    "Request handling",
+                    "User interaction",
+                ],
+            },
+            "service": {
+                "patterns": ["service", "services/"],
+                "responsibilities": [
+                    "Implement business logic",
+                    "Coordinate domain operations",
+                ],
+                "not_responsible_for": [
+                    "Request parsing",
+                    "Response formatting",
+                    "Direct user interaction",
+                ],
+            },
+        }
 
-        # Extract potential symbol names from prompt
-        words = prompt.split()
-        keywords = []
+        for file_path in related_files[:10]:  # Limit to avoid too much analysis
+            layer_resp = self._analyze_file_layer(file_path, layer_patterns)
+            if layer_resp is not None:
+                responsibilities.append(layer_resp)
 
-        for word in words:
-            # Clean word of punctuation
-            clean = word.strip(".,!?()[]{}:;\"'")
-            # Look for CamelCase or snake_case words as likely symbol names
-            if (
-                len(clean) > 2
-                and (clean[0].isupper() or "_" in clean or clean.islower())
-                and clean not in ("the", "and", "for", "with", "from", "that", "this")
-            ):
-                keywords.append(clean)
+        return responsibilities
 
-        # Search for each keyword
-        for keyword in keywords[:5]:  # Limit to 5 keywords
-            try:
-                found = self._repo_map.find_symbol(keyword)
-                for sym in found[:3]:  # Limit per keyword
-                    if sym not in symbols:
-                        symbols.append(sym)
-            except Exception as e:
-                logger.debug("Symbol search failed for '%s': %s", keyword, e)
+    def _analyze_file_layer(
+        self,
+        file_path: str,
+        layer_patterns: dict,
+    ) -> LayerResponsibility | None:
+        """Analyze a single file for layer responsibility.
 
-        return symbols[:15]  # Return at most 15 symbols
-
-    def _extract_patterns_from_symbols(self, symbols: list[Any]) -> list[str]:
-        """Extract coding patterns from found symbols.
-
-        Analyzes symbols to identify patterns that should be followed.
-
-        Args:
-            symbols: List of Symbol objects.
-
-        Returns:
-            List of pattern descriptions.
+        First tries to extract from docstring, then falls back to
+        pattern-based inference.
         """
-        patterns = []
+        # Try to read the file's module docstring
+        try:
+            content = self.sandbox.read_file(file_path, start=1, end=50)
+            docstring = self._extract_module_docstring(content)
+            if docstring:
+                layer_resp = self._parse_docstring_responsibilities(
+                    file_path, docstring
+                )
+                if layer_resp is not None:
+                    return layer_resp
+        except Exception as e:
+            logger.debug("Failed to read file %s for layer analysis: %s", file_path, e)
 
-        if not symbols:
-            return patterns
+        # Fall back to pattern-based inference
+        file_lower = file_path.lower()
+        for layer_name, config in layer_patterns.items():
+            for pattern in config["patterns"]:
+                if pattern in file_lower:
+                    return LayerResponsibility(
+                        file_path=file_path,
+                        layer_name=layer_name,
+                        responsibilities=config["responsibilities"],
+                        not_responsible_for=config["not_responsible_for"],
+                        source="inferred",
+                    )
 
-        # Check for decorator patterns
-        decorators_seen: set[str] = set()
-        for sym in symbols:
-            if hasattr(sym, "decorators") and sym.decorators:
-                decorators_seen.update(sym.decorators)
+        return None
 
-        if "@dataclass" in decorators_seen:
-            patterns.append("Use @dataclass for data classes")
-        if "@property" in decorators_seen:
-            patterns.append("Use @property for computed attributes")
-        if any("pytest" in d or "fixture" in d for d in decorators_seen):
-            patterns.append("Use pytest fixtures for test setup")
+    def _extract_module_docstring(self, content: str) -> str | None:
+        """Extract module docstring from file content."""
+        lines = content.split("\n")
+        in_docstring = False
+        docstring_lines = []
 
-        # Check for type hint patterns
-        has_type_hints = any(
-            hasattr(sym, "signature") and sym.signature and "->" in sym.signature
-            for sym in symbols
-        )
-        if has_type_hints:
-            patterns.append("Include return type annotations")
+        for line in lines:
+            stripped = line.strip()
+            # Skip empty lines and imports at start
+            if not in_docstring:
+                if stripped.startswith('"""') or stripped.startswith("'''"):
+                    in_docstring = True
+                    # Check for single-line docstring
+                    if stripped.count('"""') >= 2 or stripped.count("'''") >= 2:
+                        return stripped.strip('"""').strip("'''")
+                    docstring_lines.append(stripped.lstrip('"""').lstrip("'''"))
+                elif stripped.startswith("from ") or stripped.startswith("import "):
+                    # Hit imports without docstring
+                    return None
+                elif stripped and not stripped.startswith("#"):
+                    # Non-empty, non-comment line without docstring
+                    return None
+            else:
+                if '"""' in stripped or "'''" in stripped:
+                    docstring_lines.append(stripped.rstrip('"""').rstrip("'''"))
+                    return "\n".join(docstring_lines)
+                docstring_lines.append(stripped)
 
-        # Check for docstring patterns
-        has_docstrings = any(
-            hasattr(sym, "docstring") and sym.docstring
-            for sym in symbols
-        )
-        if has_docstrings:
-            patterns.append("Include docstrings for public functions")
+        return None
 
-        # Check for naming conventions
-        class_symbols = [s for s in symbols if hasattr(s, "kind") and str(s.kind) == "SymbolKind.CLASS"]
-        func_symbols = [s for s in symbols if hasattr(s, "kind") and str(s.kind) == "SymbolKind.FUNCTION"]
+    def _parse_docstring_responsibilities(
+        self,
+        file_path: str,
+        docstring: str,
+    ) -> LayerResponsibility | None:
+        """Parse responsibilities from docstring.
 
-        if class_symbols and all(s.name[0].isupper() for s in class_symbols if s.name):
-            patterns.append("Use PascalCase for class names")
-        if func_symbols and all("_" in s.name or s.name.islower() for s in func_symbols if s.name):
-            patterns.append("Use snake_case for function names")
+        Looks for explicit declarations like:
+        - "This is a..." / "This module..."
+        - "Design goals:" sections
+        - "This is intentionally NOT..." statements
+        """
+        responsibilities: list[str] = []
+        not_responsible: list[str] = []
+        layer_name = "unknown"
 
-        return patterns
+        lines = docstring.split("\n")
+        for line in lines:
+            line_lower = line.lower().strip()
+
+            # Detect layer type
+            if "rpc" in line_lower or "json-rpc" in line_lower:
+                layer_name = "rpc"
+            elif "agent" in line_lower:
+                layer_name = "agent"
+            elif "executor" in line_lower or "runner" in line_lower:
+                layer_name = "executor"
+            elif "database" in line_lower or "storage" in line_lower:
+                layer_name = "storage"
+            elif "service" in line_lower:
+                layer_name = "service"
+
+            # Detect responsibilities
+            if line_lower.startswith("- ") and ":" not in line_lower:
+                responsibilities.append(line.strip("- ").strip())
+
+            # Detect "NOT" statements
+            if "not " in line_lower and ("this is" in line_lower or "intentionally" in line_lower):
+                not_responsible.append(line.strip())
+
+        if responsibilities or not_responsible or layer_name != "unknown":
+            return LayerResponsibility(
+                file_path=file_path,
+                layer_name=layer_name,
+                responsibilities=responsibilities,
+                not_responsible_for=not_responsible,
+                source="docstring",
+            )
+
+        return None
 
     def _synthesize_intent(
         self,
@@ -729,6 +947,9 @@ Output JSON with these fields:
         codebase_intent: CodebaseIntent,
     ) -> DiscoveredIntent:
         """Synthesize using LLM for deeper understanding."""
+        self._notify("Calling LLM to synthesize unified intent...")
+        self._notify(f"  Sources: prompt + play context + codebase ({len(codebase_intent.related_files)} files)")
+
         system = """You synthesize user intent from multiple sources into a clear understanding.
 
 Given:
@@ -749,22 +970,16 @@ Output JSON:
 
 Be specific. Ground everything in the provided context. Flag ambiguities honestly."""
 
-        # Build symbol context section if available
-        symbol_section = ""
-        if codebase_intent.symbol_context:
-            symbol_section = f"""
-
-RELEVANT CODE SYMBOLS:
-{codebase_intent.symbol_context[:1500]}
-"""
-        if codebase_intent.relevant_symbols:
-            symbol_section += f"""
-- Key Symbols: {', '.join(codebase_intent.relevant_symbols[:8])}
-"""
-        if codebase_intent.existing_patterns:
-            symbol_section += f"""
-- Existing Patterns: {', '.join(codebase_intent.existing_patterns[:5])}
-"""
+        # Build layer responsibilities section
+        layer_section = ""
+        if codebase_intent.layer_responsibilities:
+            layer_section = "\n\nLAYER RESPONSIBILITIES (respect these boundaries):"
+            for layer in codebase_intent.layer_responsibilities[:5]:
+                layer_section += f"\n\n{layer.file_path} ({layer.layer_name} layer):"
+                if layer.responsibilities:
+                    layer_section += "\n  Does: " + ", ".join(layer.responsibilities[:3])
+                if layer.not_responsible_for:
+                    layer_section += "\n  Does NOT: " + ", ".join(layer.not_responsible_for[:3])
 
         context = f"""
 USER PROMPT: {prompt}
@@ -784,15 +999,52 @@ CODEBASE CONTEXT:
 - Architecture: {codebase_intent.architecture_style}
 - Conventions: {', '.join(codebase_intent.conventions)}
 - Related Files: {', '.join(codebase_intent.related_files[:5])}
-{symbol_section}"""
+{layer_section}"""
+
+        # Log synthesis LLM call
+        self._log("llm_call_start", "Starting intent synthesis LLM call", {
+            "purpose": "synthesize_intent",
+            "prompt_length": len(prompt),
+            "context_length": len(context),
+            "related_files": codebase_intent.related_files[:5],
+            "act_goal": play_intent.act_goal,
+        })
 
         try:
+            self._notify("  Sending to LLM (synthesis)...")
             response = self._llm.chat_json(  # type: ignore
                 system=system,
                 user=context,
                 temperature=0.2,
             )
+            self._notify(f"  LLM response: {len(response)} chars")
+
+            # Log raw response
+            self._log("llm_response", "Received synthesis response", {
+                "response_length": len(response),
+                "response": response,
+            })
+
             data = json.loads(response)
+            self._notify(f"  Parsed goal: '{data.get('goal', '')[:50]}...'")
+            self._notify(f"  Confidence: {data.get('confidence', 0.7):.0%}")
+            if data.get("ambiguities"):
+                self._notify(f"  Ambiguities: {len(data['ambiguities'])} identified")
+            if data.get("assumptions"):
+                self._notify(f"  Assumptions: {len(data['assumptions'])} made")
+
+            # Log synthesized intent
+            self._log("intent_synthesized", "Synthesized unified intent", {
+                "goal": data.get("goal", "")[:100],
+                "why": data.get("why", "")[:100],
+                "what": data.get("what", "")[:100],
+                "confidence": data.get("confidence", 0.7),
+                "num_constraints": len(data.get("how_constraints", [])),
+                "num_ambiguities": len(data.get("ambiguities", [])),
+                "num_assumptions": len(data.get("assumptions", [])),
+                "ambiguities": data.get("ambiguities", []),
+                "assumptions": data.get("assumptions", []),
+            })
 
             return DiscoveredIntent(
                 goal=data.get("goal", prompt_intent.summary),
@@ -807,6 +1059,11 @@ CODEBASE CONTEXT:
                 assumptions=data.get("assumptions", []),
             )
         except Exception as e:
+            self._notify(f"LLM synthesis failed: {str(e)[:50]}... using heuristics")
+            self._log("llm_error", f"Synthesis failed: {e}", {
+                "error": str(e),
+                "fallback": "heuristic",
+            }, level="WARN")
             logger.warning("LLM synthesis failed: %s", e)
             return self._synthesize_heuristic(
                 prompt, prompt_intent, play_intent, codebase_intent

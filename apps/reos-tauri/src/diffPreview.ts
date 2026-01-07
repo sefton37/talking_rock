@@ -391,11 +391,13 @@ export function renderDiffPreview(
 
 /**
  * Create a collapsed diff preview that can be expanded.
+ * If onShowOverlay is provided, clicking will call it instead of expanding inline.
  */
 export function renderCollapsedDiffPreview(
   preview: DiffPreview,
   sessionId: string,
-  onComplete: () => void
+  onComplete: () => void,
+  onShowOverlay?: () => void
 ): HTMLElement {
   const container = el('div');
   container.className = 'diff-preview-collapsed';
@@ -439,29 +441,36 @@ export function renderCollapsedDiffPreview(
   header.appendChild(expandHint);
   container.appendChild(header);
 
-  let expanded = false;
-  let expandedContent: HTMLElement | null = null;
+  // If overlay callback provided, use it; otherwise expand inline
+  if (onShowOverlay) {
+    container.onclick = () => {
+      onShowOverlay();
+    };
+  } else {
+    let expanded = false;
+    let expandedContent: HTMLElement | null = null;
 
-  container.onclick = () => {
-    if (expanded) {
-      if (expandedContent) {
-        expandedContent.remove();
-        expandedContent = null;
+    container.onclick = () => {
+      if (expanded) {
+        if (expandedContent) {
+          expandedContent.remove();
+          expandedContent = null;
+        }
+        expandHint.textContent = 'Click to preview';
+        container.style.backgroundColor = 'rgba(59, 130, 246, 0.08)';
+        expanded = false;
+      } else {
+        expandedContent = renderDiffPreview(preview, sessionId, () => {
+          container.remove();
+          onComplete();
+        });
+        container.appendChild(expandedContent);
+        expandHint.textContent = 'Click to collapse';
+        container.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
+        expanded = true;
       }
-      expandHint.textContent = 'Click to preview';
-      container.style.backgroundColor = 'rgba(59, 130, 246, 0.08)';
-      expanded = false;
-    } else {
-      expandedContent = renderDiffPreview(preview, sessionId, () => {
-        container.remove();
-        onComplete();
-      });
-      container.appendChild(expandedContent);
-      expandHint.textContent = 'Click to collapse';
-      container.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
-      expanded = true;
-    }
-  };
+    };
+  }
 
   return container;
 }

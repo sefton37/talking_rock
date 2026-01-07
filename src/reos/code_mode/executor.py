@@ -38,8 +38,10 @@ from reos.code_mode.perspectives import (
 from reos.code_mode.sandbox import CodeSandbox
 from reos.code_mode.streaming import ExecutionCancelledError, ExecutionObserver
 from reos.code_mode.explorer import StepExplorer, StepAlternative, ExplorationState
+from reos.code_mode.session_logger import SessionLogger
 
 if TYPE_CHECKING:
+    from reos.code_mode.planner import CodeTaskPlan
     from reos.code_mode.project_memory import ProjectMemoryStore
     from reos.providers import LLMProvider
     from reos.play_fs import Act
@@ -163,13 +165,19 @@ class CodeExecutor:
         self._project_memory = project_memory
         self._observer = observer
         self._perspectives = PerspectiveManager(llm)
-        self._intent_discoverer = IntentDiscoverer(sandbox, llm, project_memory=project_memory)
-        self._contract_builder = ContractBuilder(sandbox, llm, project_memory=project_memory)
+        self._intent_discoverer = IntentDiscoverer(
+            sandbox, llm, project_memory=project_memory, observer=observer
+        )
+        self._contract_builder = ContractBuilder(
+            sandbox, llm, project_memory=project_memory, observer=observer
+        )
         self._explorer = StepExplorer(sandbox, self._perspectives)
         # Track generated content for correction detection
         self._generated_content: dict[str, str] = {}
         # Track exploration states by step ID
         self._exploration_states: dict[str, ExplorationState] = {}
+        # Session logger for verbose debugging (initialized per-execution)
+        self._session_logger: SessionLogger | None = None
 
     def execute(
         self,
@@ -178,6 +186,7 @@ class CodeExecutor:
         knowledge_context: str = "",
         max_iterations: int = 10,
         auto_approve: bool = False,
+        plan_context: "CodeTaskPlan | None" = None,
     ) -> ExecutionResult:
         """Execute the full code mode loop.
 
@@ -187,47 +196,100 @@ class CodeExecutor:
             knowledge_context: Optional KB context.
             max_iterations: Maximum loop iterations.
             auto_approve: If True, skip approval prompts.
+            plan_context: Optional pre-computed plan from CodePlanner.
+                         When provided, reuses the plan's file analysis
+                         instead of rediscovering from scratch.
 
         Returns:
             ExecutionResult with outcome and state.
         """
         import uuid
 
+        session_id = f"exec-{uuid.uuid4().hex[:8]}"
         state = ExecutionState(
-            session_id=f"exec-{uuid.uuid4().hex[:8]}",
+            session_id=session_id,
             prompt=prompt,
             max_iterations=max_iterations,
         )
+
+        # Initialize session logger for verbose debugging
+        self._session_logger = SessionLogger(session_id=session_id, prompt=prompt)
+        self._session_logger.log_info("executor", "init", f"Starting execution with max {max_iterations} iterations", {
+            "session_id": session_id,
+            "max_iterations": max_iterations,
+            "auto_approve": auto_approve,
+            "has_plan_context": plan_context is not None,
+        })
+
+        # Pass session logger to subsystems for comprehensive logging
+        self._intent_discoverer._session_logger = self._session_logger
+        self._contract_builder._session_logger = self._session_logger
 
         # Clear generated content tracker for this session
         self._generated_content.clear()
 
         try:
-            # Phase 1: Discover Intent
+            # Phase 1: Discover Intent (enhanced with plan context if available)
             state.status = LoopStatus.DISCOVERING_INTENT
             self._notify_phase_change(state.status)
-            state.intent = self._discover_intent(prompt, act, knowledge_context)
+            self._session_logger.log_phase_change("intent", "Discovering user intent")
+            state.intent = self._discover_intent(
+                prompt, act, knowledge_context, plan_context=plan_context
+            )
+            # Log discovered intent
+            self._session_logger.log_intent_discovered(
+                goal=state.intent.goal,
+                confidence=state.intent.confidence,
+                ambiguities=state.intent.ambiguities,
+                assumptions=state.intent.assumptions,
+            )
 
             # Main loop
             while state.current_iteration < max_iterations:
                 # Notify iteration start
                 self._notify_iteration_start(state.current_iteration + 1, max_iterations)
+                unfulfilled = state.current_contract.get_unfulfilled_criteria() if state.current_contract else []
+                self._session_logger.log_iteration_start(
+                    iteration=state.current_iteration + 1,
+                    max_iterations=max_iterations,
+                    unfulfilled_count=len(unfulfilled),
+                )
 
                 iteration = self._run_iteration(state, act, auto_approve)
                 state.iterations.append(iteration)
                 state.current_iteration += 1
 
+                # Log iteration completion
+                fulfilled = len(state.current_contract.acceptance_criteria) - len(state.current_contract.get_unfulfilled_criteria()) if state.current_contract else 0
+                total = len(state.current_contract.acceptance_criteria) if state.current_contract else 0
+                self._session_logger.log_iteration_complete(
+                    iteration=state.current_iteration,
+                    fulfilled_count=fulfilled,
+                    total_criteria=total,
+                )
+
                 if iteration.error:
+                    self._session_logger.log_error("executor", "iteration_failed", f"Iteration failed: {iteration.error}", {
+                        "iteration": state.current_iteration,
+                        "error": iteration.error,
+                    })
                     state.status = LoopStatus.FAILED
                     self._notify_phase_change(state.status)
                     break
 
                 # Check if complete
                 if state.current_contract and state.current_contract.is_fulfilled(self.sandbox):
+                    self._session_logger.log_info("executor", "contract_fulfilled", "All criteria fulfilled!")
                     state.status = LoopStatus.COMPLETED
                     state.completed_at = datetime.now(timezone.utc)
                     self._notify_phase_change(state.status)
                     break
+
+            # If loop ended without completion (max iterations reached), mark as failed
+            if state.status not in (LoopStatus.COMPLETED, LoopStatus.FAILED):
+                self._session_logger.log_warn("executor", "max_iterations", f"Max iterations ({max_iterations}) reached without completion")
+                state.status = LoopStatus.FAILED
+                self._notify_phase_change(state.status)
 
             # Build result
             files_changed = self._collect_changed_files(state)
@@ -246,6 +308,11 @@ class CodeExecutor:
             # Record session in project memory
             self._record_session(state, act, result)
 
+            # Close session logger
+            outcome = "completed" if result.success else "failed"
+            self._session_logger.close(outcome=outcome, final_message=result.message)
+            self._session_logger.log_info("executor", "session_end", f"Session log saved to: {self._session_logger.get_log_path()}")
+
             return result
 
         except ExecutionCancelledError:
@@ -258,6 +325,8 @@ class CodeExecutor:
             )
             self._notify_error("Execution cancelled by user")
             self._record_session(state, act, result)
+            if self._session_logger:
+                self._session_logger.close(outcome="cancelled", final_message="Cancelled by user")
             return result
 
         except Exception as e:
@@ -275,6 +344,11 @@ class CodeExecutor:
             # Record failed session
             self._record_session(state, act, result)
 
+            # Close session logger with error
+            if self._session_logger:
+                self._session_logger.log_error("executor", "exception", f"Unhandled exception: {e}")
+                self._session_logger.close(outcome="failed", final_message=str(e))
+
             return result
 
     def _discover_intent(
@@ -282,10 +356,23 @@ class CodeExecutor:
         prompt: str,
         act: Act,
         knowledge_context: str,
+        plan_context: "CodeTaskPlan | None" = None,
     ) -> DiscoveredIntent:
-        """Phase 1: Discover intent from all sources."""
+        """Phase 1: Discover intent from all sources.
+
+        Args:
+            prompt: The user's request.
+            act: The active Act with context.
+            knowledge_context: Optional KB context.
+            plan_context: Optional pre-computed plan with file analysis.
+
+        Returns:
+            DiscoveredIntent synthesizing all sources.
+        """
         self._perspectives.shift_to(Phase.INTENT)
-        return self._intent_discoverer.discover(prompt, act, knowledge_context)
+        return self._intent_discoverer.discover(
+            prompt, act, knowledge_context, plan_context=plan_context
+        )
 
     def _run_iteration(
         self,
@@ -304,12 +391,20 @@ class CodeExecutor:
             if state.current_contract is None:
                 state.status = LoopStatus.BUILDING_CONTRACT
                 self._notify_phase_change(state.status)
+                self._session_logger.log_phase_change("contract", "Building acceptance contract")
                 iteration.phase_reached = Phase.CONTRACT
                 state.current_contract = self._build_contract(state.intent)
                 state.contracts.append(state.current_contract)
                 iteration.contract_id = state.current_contract.id
                 iteration.criteria_total = len(state.current_contract.acceptance_criteria)
                 self._notify_contract_built(state.current_contract)
+                # Log contract details
+                criteria_summaries = [c.description[:60] for c in state.current_contract.acceptance_criteria]
+                self._session_logger.log_contract_built(
+                    contract_id=state.current_contract.id,
+                    criteria_count=len(state.current_contract.acceptance_criteria),
+                    criteria_summaries=criteria_summaries,
+                )
 
             contract = state.current_contract
 
@@ -325,10 +420,27 @@ class CodeExecutor:
             if next_step:
                 state.status = LoopStatus.BUILDING
                 self._notify_phase_change(state.status)
+                self._session_logger.log_phase_change("build", "Executing step")
                 iteration.phase_reached = Phase.BUILD
                 self._notify_step_start(next_step)
+                # Log step start
+                step_idx = contract.steps.index(next_step) + 1 if next_step in contract.steps else 0
+                self._session_logger.log_step_start(
+                    step_num=step_idx,
+                    total_steps=len(contract.steps),
+                    description=next_step.description,
+                    step_type=next_step.criterion.type.value if next_step.criterion else None,
+                    target_path=next_step.target_file,
+                )
                 step_result = self._execute_step(next_step, state.intent, act, state)
                 self._notify_step_complete(next_step, step_result.success, step_result.output)
+                # Log step completion
+                self._session_logger.log_step_complete(
+                    step_num=step_idx,
+                    success=step_result.success,
+                    output=step_result.output[:500] if step_result.output else None,
+                    error=step_result.error,
+                )
 
                 if step_result.success:
                     next_step.status = "completed"
@@ -339,8 +451,14 @@ class CodeExecutor:
                     # Phase 5: Verify
                     state.status = LoopStatus.VERIFYING
                     self._notify_phase_change(state.status)
+                    self._session_logger.log_phase_change("verify", "Verifying step")
                     iteration.phase_reached = Phase.VERIFY
                     verification_passed = self._verify_step(next_step, contract)
+                    self._session_logger.log_info("executor", "verification_result",
+                        f"Verification {'PASSED' if verification_passed else 'FAILED'}", {
+                            "step": next_step.description[:50],
+                            "passed": verification_passed,
+                        })
 
                     # Phase 5.5: Debug if verification failed
                     if not verification_passed and debug_attempts < 3:
@@ -608,8 +726,8 @@ class CodeExecutor:
                             old_content=current_content,
                             diff_summary=diff_summary,
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to record file change: %s", e)
 
                 return StepResult(
                     success=True,
@@ -815,8 +933,8 @@ Output JSON with:
         if step.target_file:
             try:
                 file_content = self.sandbox.read_file(step.target_file)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to read target file for debug context: %s", e)
 
         context = f"""
 STEP DESCRIPTION: {step.description}
@@ -1064,9 +1182,24 @@ FILE CONTENT (if relevant):
                 f"Files changed: {', '.join(files) if files else 'none'}"
             )
         elif state.status == LoopStatus.FAILED:
+            # Try to get a meaningful error message
             last_error = ""
             if state.iterations:
-                last_error = state.iterations[-1].error or ""
+                last_iter = state.iterations[-1]
+                last_error = last_iter.error or ""
+
+                # If no explicit error, check for unfulfilled criteria
+                if not last_error and state.current_contract:
+                    unfulfilled = state.current_contract.get_unfulfilled_criteria()
+                    if unfulfilled:
+                        criteria_desc = [c.description for c in unfulfilled[:3]]
+                        last_error = f"Unfulfilled criteria: {'; '.join(criteria_desc)}"
+                        if len(unfulfilled) > 3:
+                            last_error += f" (+{len(unfulfilled) - 3} more)"
+
+            if not last_error:
+                last_error = "Max iterations reached without completing all criteria"
+
             return f"Failed after {state.current_iteration} iteration(s): {last_error}"
         else:
             return f"Stopped at status: {state.status.value}"
@@ -1374,5 +1507,6 @@ Output a single sentence rule like: "Use dataclasses instead of TypedDict"
                 temperature=0.2,
             )
             return response.strip()[:200]
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to generate rule description: %s", e)
             return f"Code {correction_type} preference"

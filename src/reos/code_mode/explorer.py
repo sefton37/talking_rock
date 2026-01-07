@@ -16,8 +16,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+# Runtime import - needed for instantiation
+from reos.code_mode.contract import ContractStep
+
 if TYPE_CHECKING:
-    from reos.code_mode.contract import ContractStep
     from reos.code_mode.intent import DiscoveredIntent
     from reos.code_mode.perspectives import PerspectiveManager, Phase
     from reos.code_mode.sandbox import CodeSandbox

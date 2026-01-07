@@ -211,6 +211,41 @@ export type SystemLiveStateResult = {
   }>;
 };
 
+// Code Mode Planning State (pre-approval phase)
+export type CodePlanningState = {
+  planning_id: string;
+  prompt: string;
+  phase: string;
+  phase_name: string;
+  phase_description: string;
+  phase_index: number;
+  activity_log: string[];
+  is_complete: boolean;
+  success: boolean | null;
+  error: string | null;
+  intent_summary: string;
+  contract_summary: string;
+  ambiguities: string[];
+  assumptions: string[];
+  started_at: string;
+  elapsed_seconds: number;
+};
+
+export type CodePlanStartResult = {
+  planning_id: string;
+  status: string;
+  prompt: string;
+};
+
+export type CodePlanResultResponse = {
+  success: boolean;
+  error?: string;
+  response_text?: string;
+  message_id?: string;
+  plan_id?: string;
+  contract_id?: string;
+};
+
 export type ServiceActionResult = {
   ok?: boolean;
   requires_approval?: boolean;
@@ -257,7 +292,7 @@ export type PlayMeReadResult = {
 
 export type PlayActsListResult = {
   active_act_id: string | null;
-  acts: Array<{ act_id: string; title: string; active: boolean; notes: string }>;
+  acts: Array<{ act_id: string; title: string; active: boolean; notes: string; repo_path: string | null }>;
 };
 
 export type PlayScenesListResult = {
@@ -277,7 +312,13 @@ export type PlayBeatsListResult = {
 
 export type PlayActsCreateResult = {
   created_act_id: string;
-  acts: Array<{ act_id: string; title: string; active: boolean; notes: string }>;
+  acts: Array<{ act_id: string; title: string; active: boolean; notes: string; repo_path: string | null }>;
+};
+
+export type PlayActsAssignRepoResult = {
+  success: boolean;
+  repo_path: string;
+  acts: Array<{ act_id: string; title: string; active: boolean; notes: string; repo_path: string | null }>;
 };
 
 export type PlayScenesMutationResult = {

@@ -47,6 +47,12 @@ _REFERENCE_PATTERN = re.compile(
     r"\b(it|that|this|the service|the container|the package|the error|the file|the command)\b",
     re.IGNORECASE,
 )
+# Pattern to detect repo path responses
+_REPO_PATH_CONFIRM_PATTERN = re.compile(
+    r"^(yes|y|ok|okay|sure|default|use default)$",
+    re.IGNORECASE,
+)
+_REPO_PATH_VALUE_PATTERN = re.compile(r"^[~/.].+")
 
 # Map ordinals to numbers
 _ORDINAL_MAP = {
@@ -195,21 +201,375 @@ class ChatAgent:
         self._db.set_state(key="pending_plan_json", value="")
         self._db.set_state(key="pending_plan_id", value="")
 
+    def _save_pending_code_plan(self, plan: CodeTaskPlan) -> None:
+        """Save pending code plan to database for persistence."""
+        try:
+            plan_json = json.dumps({
+                "id": plan.id,
+                "goal": plan.goal,
+                "steps": [
+                    {
+                        "id": s.id,
+                        "type": s.type.value if hasattr(s.type, 'value') else str(s.type),
+                        "description": s.description,
+                        "target_path": s.target_path,
+                    }
+                    for s in plan.steps
+                ],
+                "estimated_impact": plan.estimated_impact.value if hasattr(plan.estimated_impact, 'value') else str(plan.estimated_impact),
+            })
+            self._db.set_state(key="pending_code_plan_json", value=plan_json)
+            self._pending_code_plan = plan
+        except Exception as e:
+            logger.warning("Failed to save pending code plan: %s", e)
+
+    def _get_pending_code_plan(self) -> CodeTaskPlan | None:
+        """Get pending code plan from memory or database."""
+        if self._pending_code_plan is not None:
+            return self._pending_code_plan
+
+        plan_json = self._db.get_state(key="pending_code_plan_json")
+        if plan_json:
+            try:
+                data = json.loads(plan_json)
+                # Reconstruct minimal plan object for execution
+                from reos.code_mode import CodeStep, CodeStepType, ImpactLevel
+                steps = []
+                for s in data.get("steps", []):
+                    try:
+                        step_type = CodeStepType(s["type"])
+                    except ValueError:
+                        step_type = CodeStepType.ANALYZE
+                    steps.append(
+                        CodeStep(
+                            id=s["id"],
+                            type=step_type,
+                            description=s["description"],
+                            target_path=s.get("target_path"),
+                        )
+                    )
+                plan = CodeTaskPlan(
+                    id=data["id"],
+                    goal=data["goal"],
+                    steps=steps,
+                    estimated_impact=ImpactLevel(data.get("estimated_impact", "minor")),
+                )
+                self._pending_code_plan = plan
+                return plan
+            except Exception as e:
+                logger.debug("Failed to restore pending code plan: %s", e)
+        return None
+
+    def _clear_pending_code_plan(self) -> None:
+        """Clear pending code plan."""
+        self._pending_code_plan = None
+        self._db.set_state(key="pending_code_plan_json", value="")
+
+    def _get_active_act(self) -> Act | None:
+        """Get the active Act (regardless of whether it has a repo).
+
+        Returns:
+            The active Act, or None if no act is active.
+        """
+        try:
+            acts, _active_id = play_list_acts()
+            for act in acts:
+                if act.active:
+                    return act
+            return None
+        except Exception as e:
+            logger.debug("Error getting active act: %s", e)
+            return None
+
     def _get_active_act_with_repo(self) -> Act | None:
         """Get the active Act if it has a repository assigned.
 
         Returns:
             The active Act with repo_path set, or None.
         """
+        act = self._get_active_act()
+        if act and act.repo_path:
+            return act
+        return None
+
+    def _slugify(self, text: str) -> str:
+        """Convert text to a URL-safe slug for directory names."""
+        slug = text.lower().strip()
+        slug = re.sub(r'[^\w\s-]', '', slug)
+        slug = re.sub(r'[\s_-]+', '-', slug)
+        return slug[:50]
+
+    def _get_pending_code_prerequisite(self) -> dict[str, Any] | None:
+        """Get pending code prerequisite state if any."""
+        prereq_json = self._db.get_state(key="pending_code_prerequisite")
+        if prereq_json:
+            try:
+                return json.loads(prereq_json)
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    def _set_pending_code_prerequisite(
+        self,
+        act_id: str,
+        original_request: str,
+        prerequisite_type: str,
+        suggested_value: str,
+    ) -> None:
+        """Save pending code prerequisite state."""
+        state = {
+            "act_id": act_id,
+            "original_request": original_request,
+            "prerequisite_type": prerequisite_type,
+            "suggested_value": suggested_value,
+            "created_at": datetime.now().isoformat(),
+        }
+        self._db.set_state(key="pending_code_prerequisite", value=json.dumps(state))
+
+    def _clear_pending_code_prerequisite(self) -> None:
+        """Clear pending code prerequisite state."""
+        self._db.set_state(key="pending_code_prerequisite", value=None)
+
+    def _handle_pending_repo_prerequisite(
+        self,
+        user_text: str,
+        prereq: dict[str, Any],
+        conversation_id: str,
+    ) -> ChatResponse | None:
+        """Handle a user response to a pending repo prerequisite prompt.
+
+        Returns:
+            ChatResponse if handled, None if the response doesn't look like a repo path.
+        """
+        from pathlib import Path
+        from .play_fs import assign_repo_to_act
+
+        text_stripped = user_text.strip()
+
+        # Check if user confirmed default
+        if _REPO_PATH_CONFIRM_PATTERN.match(text_stripped):
+            repo_path = prereq["suggested_value"]
+        elif _REPO_PATH_VALUE_PATTERN.match(text_stripped):
+            repo_path = text_stripped
+        else:
+            # Doesn't look like a repo response - ask again
+            message_id = uuid.uuid4().hex[:12]
+            answer = (
+                f"I didn't understand that as a path. Please enter a directory path "
+                f"like `{prereq['suggested_value']}` or type **yes** to use the suggested default."
+            )
+            self._db.add_message(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=answer,
+                message_type="text",
+            )
+            return ChatResponse(
+                answer=answer,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                message_type="text",
+            )
+
+        # Set up the repo
         try:
-            acts = play_list_acts()
-            for act in acts:
-                if act.active and act.repo_path:
-                    return act
-            return None
+            path = Path(repo_path).expanduser().resolve()
+
+            # Create directory if needed
+            if not path.exists():
+                path.mkdir(parents=True, exist_ok=True)
+
+            # Initialize git if needed
+            git_dir = path / ".git"
+            if not git_dir.exists():
+                import subprocess
+                subprocess.run(["git", "init"], cwd=str(path), capture_output=True, check=True)
+                readme = path / "README.md"
+                if not readme.exists():
+                    readme.write_text(f"# Project\n\nCreated by ReOS\n")
+                subprocess.run(["git", "add", "."], cwd=str(path), capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=str(path), capture_output=True, check=True)
+
+            # Assign to act
+            assign_repo_to_act(act_id=prereq["act_id"], repo_path=str(path))
+
+            # Clear the prerequisite
+            original_request = prereq["original_request"]
+            self._clear_pending_code_prerequisite()
+
+            # Now process the original request
+            # Add a status message first
+            status_message_id = uuid.uuid4().hex[:12]
+            status_text = f"Project folder set to `{path}`. Now working on your request..."
+            self._db.add_message(
+                message_id=status_message_id,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=status_text,
+                message_type="text",
+            )
+
+            # Get the act with repo now set and process original request
+            active_act = self._get_active_act_with_repo()
+            if active_act:
+                code_result = self._handle_code_mode(original_request, active_act, conversation_id)
+                if code_result:
+                    # Prepend the status message
+                    code_result.answer = f"{status_text}\n\n---\n\n{code_result.answer}"
+                    return code_result
+
+            # Fallback - shouldn't happen
+            message_id = uuid.uuid4().hex[:12]
+            answer = f"Project folder set to `{path}`. Please try your request again."
+            self._db.add_message(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=answer,
+                message_type="text",
+            )
+            return ChatResponse(
+                answer=answer,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                message_type="text",
+            )
+
         except Exception as e:
-            logger.debug("Error getting active act: %s", e)
+            message_id = uuid.uuid4().hex[:12]
+            answer = f"Failed to set project folder: {e}. Please try a different path."
+            self._db.add_message(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=answer,
+                message_type="text",
+            )
+            return ChatResponse(
+                answer=answer,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                message_type="text",
+            )
+
+    def _handle_pending_code_plan_approval(
+        self,
+        user_text: str,
+        conversation_id: str,
+    ) -> ChatResponse | None:
+        """Handle user response to a pending code plan approval prompt.
+
+        Returns:
+            ChatResponse if handled (yes/no response), None otherwise.
+        """
+        pending_plan = self._get_pending_code_plan()
+        if pending_plan is None:
             return None
+
+        text_stripped = user_text.strip().lower()
+
+        # Check for approval
+        if text_stripped in ("yes", "y", "ok", "okay", "sure", "proceed", "go ahead"):
+            # Clear the pending plan first
+            self._clear_pending_code_plan()
+
+            # Get active act to execute the plan
+            active_act = self._get_active_act_with_repo()
+            if not active_act:
+                message_id = _generate_id()
+                answer = "Cannot execute plan: no active Act with repository found."
+                self._db.add_message(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=answer,
+                    message_type="text",
+                )
+                return ChatResponse(
+                    answer=answer,
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    message_type="text",
+                )
+
+            # Execute the plan
+            try:
+                from pathlib import Path
+                from reos.code_mode import CodeExecutor, CodeSandbox
+
+                sandbox = CodeSandbox(Path(active_act.repo_path))  # type: ignore
+                llm = self._get_provider()
+                executor = CodeExecutor(sandbox=sandbox, llm=llm)
+
+                # Execute and get result - pass the full plan for context reuse
+                result = executor.execute(
+                    prompt=pending_plan.goal,
+                    act=active_act,
+                    plan_context=pending_plan,  # Reuse the plan's analysis!
+                )
+
+                message_id = _generate_id()
+                if result.success:
+                    answer = f"**Plan executed successfully!**\n\n{result.message}"
+                    if result.files_changed:
+                        answer += f"\n\nFiles changed: {', '.join(result.files_changed)}"
+                else:
+                    answer = f"**Plan execution had issues:**\n\n{result.message}"
+
+                self._db.add_message(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=answer,
+                    message_type="code_execution_result",
+                )
+                return ChatResponse(
+                    answer=answer,
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    message_type="code_execution_result",
+                )
+
+            except Exception as e:
+                logger.warning("Code plan execution failed: %s", e)
+                message_id = _generate_id()
+                answer = f"**Execution failed:** {e}"
+                self._db.add_message(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=answer,
+                    message_type="text",
+                )
+                return ChatResponse(
+                    answer=answer,
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    message_type="text",
+                )
+
+        # Check for rejection
+        elif text_stripped in ("no", "n", "cancel", "stop", "abort", "nevermind"):
+            self._clear_pending_code_plan()
+            message_id = _generate_id()
+            answer = "Plan cancelled. What would you like me to do instead?"
+            self._db.add_message(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=answer,
+                message_type="text",
+            )
+            return ChatResponse(
+                answer=answer,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                message_type="text",
+            )
+
+        # Not a clear yes/no - don't handle it here
+        return None
 
     def _handle_code_mode(
         self,
@@ -219,32 +579,103 @@ class ChatAgent:
     ) -> ChatResponse | None:
         """Handle a code-related request in Code Mode.
 
-        Creates a plan for the code task and presents it for approval.
+        Uses the proper architecture:
+        1. IntentDiscoverer - understands what the user wants
+        2. ContractBuilder - creates testable acceptance criteria
+        3. Present contract for user approval
 
         Returns:
             ChatResponse if handled, None to fall through to normal flow.
         """
         from pathlib import Path
+        from reos.providers import check_provider_health
+        from reos.code_mode.intent import IntentDiscoverer
+        from reos.code_mode.contract import ContractBuilder
 
         try:
-            # Initialize sandbox and planner for this Act's repo
+            # Check LLM health before proceeding
+            health = check_provider_health(self._db)
+            if not health.reachable:
+                message_id = _generate_id()
+                error_msg = health.error or "Unknown error"
+                answer = (
+                    f"**Code Mode Error:** Cannot connect to LLM provider.\n\n"
+                    f"Error: {error_msg}\n\n"
+                    f"Please check your LLM settings in the Settings panel."
+                )
+                self._db.add_message(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=answer,
+                    message_type="error",
+                )
+                return ChatResponse(
+                    answer=answer,
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    message_type="error",
+                )
+
+            # Initialize components
             repo_path = Path(active_act.repo_path)  # type: ignore[arg-type]
             sandbox = CodeSandbox(repo_path)
             llm = self._get_provider()
-            planner = CodePlanner(sandbox=sandbox, llm=llm)
 
-            # Create a plan for the code task
+            # Step 1: Discover intent (analyze what the user wants)
+            intent_discoverer = IntentDiscoverer(sandbox=sandbox, llm=llm)
+            discovered_intent = intent_discoverer.discover(user_text, active_act)
+
+            # Step 2: Build contract from intent (testable acceptance criteria)
+            contract_builder = ContractBuilder(sandbox=sandbox, llm=llm)
+            contract = contract_builder.build_from_intent(discovered_intent)
+
+            # Step 3: Also create a CodeTaskPlan for backward compatibility
+            planner = CodePlanner(sandbox=sandbox, llm=llm)
             plan = planner.create_plan(request=user_text, act=active_act)
 
-            # Store the pending plan for approval flow
-            self._pending_code_plan = plan
+            # Store the pending plan for approval flow (persisted to database)
+            self._save_pending_code_plan(plan)
 
-            # Generate plan summary for user
-            plan_summary = plan.summary()
+            # Generate contract summary for user (this is what they approve)
+            # The contract shows WHAT will be achieved, not HOW (internal steps)
+            contract_summary = contract.summary()
+
+            # Build transparency section - show what ReOS did to understand the request
+            thinking_log = ""
+            if discovered_intent.discovery_steps:
+                thinking_log = "\n### What ReOS understood:\n"
+                for step in discovered_intent.discovery_steps[:8]:  # Limit to 8 most important
+                    thinking_log += f"- {step}\n"
+
+            # Show ambiguities that might need clarification
+            clarifications = ""
+            if discovered_intent.ambiguities:
+                clarifications = "\n### Clarification needed:\n"
+                for ambiguity in discovered_intent.ambiguities:
+                    clarifications += f"- ❓ {ambiguity}\n"
+
+            # Show assumptions being made
+            assumptions = ""
+            if discovered_intent.assumptions:
+                assumptions = "\n### Assumptions:\n"
+                for assumption in discovered_intent.assumptions:
+                    assumptions += f"- 💭 {assumption}\n"
+
+            # Context info
+            intent_context = ""
+            if discovered_intent.codebase_intent.related_files:
+                intent_context = f"\n**Context files:** {', '.join(discovered_intent.codebase_intent.related_files[:5])}\n"
+            if discovered_intent.codebase_intent.conventions:
+                intent_context += f"**Following conventions:** {', '.join(discovered_intent.codebase_intent.conventions[:3])}\n"
+
             response_text = (
-                f"**Code Mode Active** (repo: `{active_act.repo_path}`)\n\n"
-                f"{plan_summary}\n\n"
-                f"Do you want me to proceed with this plan? (yes/no)"
+                f"**Code Mode Active** (repo: `{active_act.repo_path}`)\n"
+                f"{thinking_log}"
+                f"\n{contract_summary}\n"
+                f"{clarifications}{assumptions}"
+                f"{intent_context}\n"
+                f"Do you want me to proceed? (yes/no)"
             )
 
             # Store response
@@ -258,7 +689,9 @@ class ChatAgent:
                 metadata=json.dumps({
                     "code_mode": True,
                     "plan_id": plan.id,
+                    "contract_id": contract.id,
                     "repo_path": active_act.repo_path,
+                    "intent_goal": discovered_intent.goal,
                 }),
             )
 
@@ -445,16 +878,68 @@ class ChatAgent:
             message_type="text",
         )
 
-        # Check for Code Mode routing (Act with repo assigned)
-        active_act = self._get_active_act_with_repo()
+        # Check for pending code prerequisites (e.g., waiting for repo path)
+        pending_prereq = self._get_pending_code_prerequisite()
+        if pending_prereq and pending_prereq.get("prerequisite_type") == "repo_path":
+            prereq_result = self._handle_pending_repo_prerequisite(
+                user_text, pending_prereq, conversation_id
+            )
+            if prereq_result is not None:
+                return prereq_result
+
+        # Check for pending code plan approval (e.g., user said "yes" to proceed)
+        plan_approval_result = self._handle_pending_code_plan_approval(
+            user_text, conversation_id
+        )
+        if plan_approval_result is not None:
+            return plan_approval_result
+
+        # Check for Code Mode routing
+        active_act = self._get_active_act()
         if active_act is not None:
+            # Check if this looks like a code task
             routing = self._code_router.should_use_code_mode(user_text, active_act)
             if routing.use_code_mode:
-                code_result = self._handle_code_mode(
-                    user_text, active_act, conversation_id
-                )
-                if code_result is not None:
-                    return code_result
+                # Code Mode needed - check if we have a repo
+                if active_act.repo_path:
+                    # Have repo - proceed with Code Mode
+                    code_result = self._handle_code_mode(
+                        user_text, active_act, conversation_id
+                    )
+                    if code_result is not None:
+                        return code_result
+                else:
+                    # No repo - prompt for one and save the original request
+                    from pathlib import Path
+                    suggested_path = str(Path.home() / "projects" / self._slugify(active_act.title))
+
+                    self._set_pending_code_prerequisite(
+                        act_id=active_act.act_id,
+                        original_request=user_text,
+                        prerequisite_type="repo_path",
+                        suggested_value=suggested_path,
+                    )
+
+                    message_id = uuid.uuid4().hex[:12]
+                    answer = (
+                        f"I understand you want me to build something! Before I can start coding, "
+                        f"I need a project folder for **{active_act.title}**.\n\n"
+                        f"Suggested: `{suggested_path}`\n\n"
+                        f"Type **yes** to use this, or enter a different path:"
+                    )
+                    self._db.add_message(
+                        message_id=message_id,
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=answer,
+                        message_type="text",
+                    )
+                    return ChatResponse(
+                        answer=answer,
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        message_type="text",
+                    )
 
         # Route through reasoning engine for complex tasks
         reasoning_result = self._try_reasoning(user_text, conversation_id)
