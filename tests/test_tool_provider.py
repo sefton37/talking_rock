@@ -285,3 +285,156 @@ class TestCreateToolProvider:
         # Should be able to call protocol methods
         tools = provider.list_tools()
         assert len(tools) > 0
+
+
+# ==============================================================================
+# New Tool Tests
+# ==============================================================================
+
+class TestNewTools:
+    """Tests for the new production-grade tools."""
+
+    def test_has_all_new_tools(self, temp_git_repo: Path) -> None:
+        """Provider should have all new tools."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        new_tools = [
+            "run_tests",
+            "type_check",
+            "lint_file",
+            "format_code",
+            "git_blame",
+            "git_log",
+            "coverage_check",
+            "parse_symbols",
+        ]
+
+        for tool_name in new_tools:
+            assert provider.has_tool(tool_name), f"Missing tool: {tool_name}"
+
+    def test_run_tests_python(self, temp_git_repo: Path) -> None:
+        """Should run pytest for Python projects."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        result = provider.call_tool("run_tests", {"verbose": True, "fail_fast": True})
+
+        # May fail since no tests, but should have run the command
+        assert result.data.get("command") is not None
+        assert "pytest" in result.data.get("command", "")
+        assert result.data.get("language") == "python"
+
+    def test_git_log(self, temp_git_repo: Path) -> None:
+        """Should get git commit history."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        result = provider.call_tool("git_log", {"max_count": 5, "oneline": True})
+
+        assert result.success
+        assert "Initial commit" in result.output or result.output  # Has some output
+
+    def test_git_blame(self, temp_git_repo: Path) -> None:
+        """Should get git blame for a file."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        result = provider.call_tool("git_blame", {"path": "src/reos/example.py"})
+
+        assert result.success
+        assert result.output  # Has blame output
+
+    def test_parse_symbols_python(self, temp_git_repo: Path) -> None:
+        """Should parse Python symbols."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        result = provider.call_tool("parse_symbols", {
+            "path": "src/reos/example.py",
+            "include_signatures": True,
+        })
+
+        assert result.success
+        assert "hello" in result.output.lower()  # Should find the hello function
+        assert "Functions:" in result.output
+
+    def test_parse_symbols_with_docstrings(self, temp_git_repo: Path) -> None:
+        """Should include docstrings when requested."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        result = provider.call_tool("parse_symbols", {
+            "path": "src/reos/example.py",
+            "include_docstrings": True,
+        })
+
+        assert result.success
+        assert result.data.get("functions") is not None
+
+    def test_type_check_returns_result(self, temp_git_repo: Path) -> None:
+        """Should attempt type checking."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        result = provider.call_tool("type_check", {"path": "src/reos/example.py"})
+
+        # May fail if pyright/mypy not installed, but should have attempted
+        assert result.data.get("command") is not None
+        assert result.data.get("language") == "python"
+
+    def test_lint_file_returns_result(self, temp_git_repo: Path) -> None:
+        """Should attempt linting."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        result = provider.call_tool("lint_file", {"path": "src/reos/example.py"})
+
+        # May fail if ruff not installed, but should have attempted
+        assert result.data.get("command") is not None
+        assert result.data.get("language") == "python"
+
+    def test_format_code_check_only(self, temp_git_repo: Path) -> None:
+        """Should check formatting without modifying."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        result = provider.call_tool("format_code", {
+            "path": "src/reos/example.py",
+            "check_only": True,
+        })
+
+        # May fail if black not installed, but should have attempted
+        assert result.data.get("command") is not None
+        assert "--check" in result.data.get("command", "")
+
+    def test_detect_project_language(self, temp_git_repo: Path) -> None:
+        """Should detect Python as project language."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        lang = provider._detect_project_language()
+
+        assert lang == "python"  # Our test repo has Python files
+
+    def test_get_file_language(self, temp_git_repo: Path) -> None:
+        """Should detect language from file extension."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        assert provider._get_file_language("test.py") == "python"
+        assert provider._get_file_language("test.ts") == "typescript"
+        assert provider._get_file_language("test.rs") == "rust"
+        assert provider._get_file_language("test.go") == "go"
+        assert provider._get_file_language("test.js") == "javascript"
+
+    def test_tool_info_has_proper_schema(self, temp_git_repo: Path) -> None:
+        """New tools should have proper input schemas."""
+        sandbox = CodeSandbox(temp_git_repo)
+        provider = SandboxToolProvider(sandbox)
+
+        tools = provider.list_tools()
+        for tool in tools:
+            assert tool.input_schema is not None
+            assert tool.category is not None
+            assert tool.description
