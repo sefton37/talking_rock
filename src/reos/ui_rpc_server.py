@@ -3749,6 +3749,186 @@ def _handle_chat_clear(
     return {"ok": True}
 
 
+# -------------------------------------------------------------------------
+# Handoff System (Talking Rock Multi-Agent)
+# -------------------------------------------------------------------------
+
+# Global state for handoff management (per-session)
+_handoff_state: dict[str, Any] = {
+    "current_agent": "cairn",  # Default entry point
+    "pending_handoff": None,
+    "handler": None,
+}
+
+
+def _get_handoff_handler():
+    """Get or create the handoff handler."""
+    from reos.handoff import AgentType, SharedToolHandler
+
+    if _handoff_state["handler"] is None:
+        current = AgentType(_handoff_state["current_agent"])
+        _handoff_state["handler"] = SharedToolHandler(current_agent=current)
+    return _handoff_state["handler"]
+
+
+def _handle_handoff_status(_db: Database) -> dict[str, Any]:
+    """Get current handoff/agent status."""
+    from reos.handoff import get_agent_manifest, AgentType, AGENT_DESCRIPTIONS
+
+    current = _handoff_state["current_agent"]
+    manifest = get_agent_manifest(AgentType(current))
+    agent_info = AGENT_DESCRIPTIONS[AgentType(current)]
+
+    pending = None
+    if _handoff_state["pending_handoff"]:
+        pending = _handoff_state["pending_handoff"].to_dict()
+
+    return {
+        "current_agent": current,
+        "agent_name": agent_info["name"],
+        "agent_role": agent_info["role"],
+        "agent_domain": agent_info["domain"],
+        "tool_count": manifest["tool_count"],
+        "pending_handoff": pending,
+        "available_agents": ["cairn", "reos", "riva"],
+    }
+
+
+def _handle_handoff_propose(
+    _db: Database,
+    *,
+    target_agent: str,
+    user_goal: str,
+    handoff_reason: str,
+    relevant_details: list[str] | None = None,
+    relevant_paths: list[str] | None = None,
+    open_ui: bool = True,
+) -> dict[str, Any]:
+    """Propose a handoff to another agent (requires user confirmation)."""
+    handler = _get_handoff_handler()
+
+    result = handler.call_tool("handoff_to_agent", {
+        "target_agent": target_agent,
+        "user_goal": user_goal,
+        "handoff_reason": handoff_reason,
+        "relevant_details": relevant_details or [],
+        "relevant_paths": relevant_paths or [],
+        "open_ui": open_ui,
+    })
+
+    # Store pending handoff in global state
+    if handler.pending_handoff:
+        _handoff_state["pending_handoff"] = handler.pending_handoff
+
+    return result
+
+
+def _handle_handoff_confirm(_db: Database, *, handoff_id: str) -> dict[str, Any]:
+    """Confirm a pending handoff."""
+    from reos.handoff import AgentType, SharedToolHandler
+
+    handler = _get_handoff_handler()
+    result = handler.confirm_handoff(handoff_id)
+
+    if result.get("status") == "confirmed":
+        # Update current agent
+        new_agent = result["target_agent"]
+        _handoff_state["current_agent"] = new_agent
+        _handoff_state["pending_handoff"] = None
+
+        # Create new handler for new agent
+        _handoff_state["handler"] = SharedToolHandler(
+            current_agent=AgentType(new_agent)
+        )
+
+        result["message"] = f"Switched to {new_agent}. How can I help?"
+
+    return result
+
+
+def _handle_handoff_reject(
+    _db: Database,
+    *,
+    handoff_id: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Reject a pending handoff."""
+    handler = _get_handoff_handler()
+    result = handler.reject_handoff(
+        handoff_id,
+        reason=reason or "User chose to stay with current agent",
+    )
+
+    _handoff_state["pending_handoff"] = None
+
+    return result
+
+
+def _handle_handoff_detect(
+    _db: Database,
+    *,
+    message: str,
+) -> dict[str, Any]:
+    """Detect if a message should trigger a handoff suggestion."""
+    from reos.handoff import detect_handoff_need, AgentType
+
+    current = AgentType(_handoff_state["current_agent"])
+    decision = detect_handoff_need(current, message)
+
+    return decision.to_dict()
+
+
+def _handle_handoff_switch(
+    _db: Database,
+    *,
+    target_agent: str,
+) -> dict[str, Any]:
+    """Directly switch to another agent (user-initiated, no confirmation)."""
+    from reos.handoff import AgentType, SharedToolHandler, AGENT_DESCRIPTIONS
+
+    if target_agent not in ["cairn", "reos", "riva"]:
+        return {"status": "error", "reason": f"Unknown agent: {target_agent}"}
+
+    old_agent = _handoff_state["current_agent"]
+    _handoff_state["current_agent"] = target_agent
+    _handoff_state["pending_handoff"] = None
+    _handoff_state["handler"] = SharedToolHandler(
+        current_agent=AgentType(target_agent)
+    )
+
+    agent_info = AGENT_DESCRIPTIONS[AgentType(target_agent)]
+
+    return {
+        "status": "switched",
+        "from_agent": old_agent,
+        "to_agent": target_agent,
+        "agent_name": agent_info["name"],
+        "agent_role": agent_info["role"],
+        "message": f"Switched to {agent_info['name']}. {agent_info['personality'].capitalize()}.",
+    }
+
+
+def _handle_handoff_manifest(
+    _db: Database,
+    *,
+    agent: str | None = None,
+) -> dict[str, Any]:
+    """Get tool manifest for an agent."""
+    from reos.handoff import get_agent_manifest, AgentType
+
+    target = agent or _handoff_state["current_agent"]
+    manifest = get_agent_manifest(AgentType(target))
+
+    return manifest
+
+
+def _handle_handoff_validate_all(_db: Database) -> dict[str, Any]:
+    """Validate all agent manifests (15-tool cap check)."""
+    from reos.handoff import validate_all_manifests
+
+    return validate_all_manifests()
+
+
 def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any] | None:
     method = req.get("method")
     req_id = req.get("id")
@@ -5201,6 +5381,98 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
                     planning_id=planning_id,
                     conversation_id=conversation_id,
                 ),
+            )
+
+        # -------------------------------------------------------------------------
+        # Handoff System (Talking Rock Multi-Agent)
+        # -------------------------------------------------------------------------
+
+        if method == "handoff/status":
+            return _jsonrpc_result(req_id=req_id, result=_handle_handoff_status(db))
+
+        if method == "handoff/propose":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            target_agent = params.get("target_agent")
+            user_goal = params.get("user_goal")
+            handoff_reason = params.get("handoff_reason")
+            if not isinstance(target_agent, str) or not target_agent:
+                raise RpcError(code=-32602, message="target_agent is required")
+            if not isinstance(user_goal, str) or not user_goal:
+                raise RpcError(code=-32602, message="user_goal is required")
+            if not isinstance(handoff_reason, str) or not handoff_reason:
+                raise RpcError(code=-32602, message="handoff_reason is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_handoff_propose(
+                    db,
+                    target_agent=target_agent,
+                    user_goal=user_goal,
+                    handoff_reason=handoff_reason,
+                    relevant_details=params.get("relevant_details"),
+                    relevant_paths=params.get("relevant_paths"),
+                    open_ui=params.get("open_ui", True),
+                ),
+            )
+
+        if method == "handoff/confirm":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            handoff_id = params.get("handoff_id")
+            if not isinstance(handoff_id, str) or not handoff_id:
+                raise RpcError(code=-32602, message="handoff_id is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_handoff_confirm(db, handoff_id=handoff_id),
+            )
+
+        if method == "handoff/reject":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            handoff_id = params.get("handoff_id")
+            if not isinstance(handoff_id, str) or not handoff_id:
+                raise RpcError(code=-32602, message="handoff_id is required")
+            reason = params.get("reason")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_handoff_reject(db, handoff_id=handoff_id, reason=reason),
+            )
+
+        if method == "handoff/detect":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            message = params.get("message")
+            if not isinstance(message, str) or not message:
+                raise RpcError(code=-32602, message="message is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_handoff_detect(db, message=message),
+            )
+
+        if method == "handoff/switch":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            target_agent = params.get("target_agent")
+            if not isinstance(target_agent, str) or not target_agent:
+                raise RpcError(code=-32602, message="target_agent is required")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_handoff_switch(db, target_agent=target_agent),
+            )
+
+        if method == "handoff/manifest":
+            if not isinstance(params, dict):
+                params = {}
+            agent = params.get("agent")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_handoff_manifest(db, agent=agent),
+            )
+
+        if method == "handoff/validate":
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_handoff_validate_all(db),
             )
 
         raise RpcError(code=-32601, message=f"Method not found: {method}")

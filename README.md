@@ -1,43 +1,68 @@
-# ReOS - Your AI, Your Hardware, Your Code
+# Talking Rock - Your AI, Your Hardware, Your Life
 
 **The open source, local-first AI that gives you everything the trillion-dollar tech companies charge perpetual rent for—running on your own hardware, with your data staying private when you choose local models.**
 
-ReOS is two things:
+Talking Rock is a three-agent system designed around how you actually live:
 
-1. **Natural Language Linux**: Control your entire Linux system through conversation. No more memorizing commands.
-2. **Agentic Coding Partner**: A full AI coding assistant that rivals Cursor, Copilot, and Devin—but open source, private, and yours.
+| Agent | Role | Domain |
+|-------|------|--------|
+| **CAIRN** | Attention Minder | Life organization, knowledge base, calendars, priorities |
+| **ReOS** | System Agent | Linux administration, terminal, services, packages |
+| **RIVA** | Code Agent | Software development, debugging, testing, git |
 
-Both capabilities share the same philosophy: **AI should be a tool you own, not a service you rent.**
-
----
-
-## The Vision
-
-The best AI coding tools today—Cursor, GitHub Copilot, Devin—are remarkable. They're also:
-- **Subscription-based**: $20-500/month, forever
-- **Cloud-dependent**: Your code goes to their servers
-- **Proprietary**: You can't see how they work, fix bugs, or add features
-- **Lock-in prone**: Switch costs increase over time
-
-ReOS proves there's another way:
-
-| Commercial Tools | ReOS |
-|-----------------|------|
-| Monthly subscription | One-time install, free forever |
-| Code sent to cloud | Local-first (Ollama) or cloud API—your choice |
-| Black box | Open source, auditable |
-| Their model, their rules | Your choice of model (Ollama, local llama.cpp, or cloud API) |
-| Engagement-optimized | Sovereignty-optimized |
-
-**The goal isn't to be "good enough for free." The goal is to be the best—and also free.**
+All three share the same philosophy: **AI should be a tool you own, not a service you rent.**
 
 ---
 
-## What ReOS Does
+## The Three Agents
 
-### Natural Language Linux
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        TALKING ROCK                              │
+│                                                                  │
+│    ┌──────────────────────────────────────────────────────┐     │
+│    │                      CAIRN                            │     │
+│    │              (Default Entry Point)                    │     │
+│    │         Attention · Life · Knowledge Base             │     │
+│    │                                                       │     │
+│    │   "Is this a system thing? → ReOS"                   │     │
+│    │   "Is this a code thing? → RIVA"                     │     │
+│    │   "Is this a life/attention thing? → I handle it"    │     │
+│    └───────────────────┬──────────────────────────────────┘     │
+│                        │                                         │
+│            ┌───────────┴───────────┐                            │
+│            ▼                       ▼                            │
+│    ┌──────────────┐       ┌──────────────┐                      │
+│    │    ReOS      │       │    RIVA      │                      │
+│    │   (System)   │       │    (Code)    │                      │
+│    │              │       │              │                      │
+│    │  Terminal UI │       │ Code Mode UI │                      │
+│    └──────────────┘       └──────────────┘                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-Control your system through conversation:
+### CAIRN - The Attention Minder
+
+CAIRN embodies "No One" - calm, non-coercive, makes room rather than demands. It's your scrum master and air traffic controller for everything in your life.
+
+**Core Principles:**
+- Surfaces the **next thing**, not everything
+- Priority driven by **your decision**—CAIRN surfaces when decisions are needed
+- Time and calendar aware (integrates with Thunderbird)
+- **Never gamifies, never guilt-trips** ("waiting when you're ready" vs "you haven't touched this")
+
+**Capabilities:**
+- Knowledge base CRUD (todos, notes, projects, references)
+- Kanban states: Active → Backlog → Waiting → Someday → Done
+- Calendar integration (Thunderbird)
+- Contact knowledge graph (link people to projects)
+- Activity tracking (when you last touched things)
+- Smart surfacing (what needs attention today)
+
+### ReOS - The System Agent
+
+ReOS controls your Linux system through conversation. Deep system understanding, transparent actions, safety-first.
 
 ```bash
 $ reos "what's using all my memory"
@@ -56,31 +81,32 @@ Proceed? [y/n]: y
 ✓ All containers stopped.
 ```
 
-- **Deep system understanding**: ReOS knows YOUR containers, services, packages by name
-- **Transparent actions**: Multi-step plans are previewed before execution
-- **Safety first**: Dangerous commands are blocked, risky ones flagged for review
-- **Capability transfer**: You learn the patterns through repeated exposure
+**Capabilities:**
+- Process and memory monitoring
+- Service management (systemd)
+- Package management (apt/dnf/pacman)
+- Container management (Docker)
+- File operations
+- Shell command execution (with safety guardrails)
 
-### Code Mode: Agentic Coding
+### RIVA - The Code Agent
 
-When an Act in The Play has a repository assigned, ReOS becomes a full coding partner:
+RIVA (Recursive Intent Verification Architecture) is methodical: it verifies intent before acting, writes tests first, and trusts execution output over LLM claims.
 
 ```
 You: Add user authentication to the API
 
-ReOS: [INTENT] Analyzing request...
+RIVA: [INTENT] Analyzing request...
       - Action: Add new feature
       - Target: API authentication
-      - Codebase: Python/FastAPI, src/ structure
 
       [CONTRACT] Success criteria:
       ✓ test_login_valid_credentials passes
       ✓ test_login_invalid_password passes
       ✓ test_logout_clears_session passes
-      ✓ Code compiles without errors
 
       [PLAN] 4 steps:
-      1. Create src/auth.py with login/logout functions
+      1. Create src/auth.py
       2. Add routes to src/api/routes.py
       3. Create tests/test_auth.py
       4. Run tests to verify
@@ -90,34 +116,51 @@ ReOS: [INTENT] Analyzing request...
       Approve changes? [y/n]
 ```
 
-**How Code Mode Works:**
+**Capabilities:**
+- Intent discovery (prompt + project context + codebase patterns)
+- Contract-based development (testable success criteria)
+- Test-first approach (generates actual test code)
+- Self-debugging loop (analyze failures, apply fixes, retry)
+- Git operations
+- Multi-language support (Python, TypeScript, Rust, Go)
+
+---
+
+## Handoff System
+
+Agents seamlessly hand off to each other when a request falls outside their domain. **Switching is always user-gated**—you confirm or reject every handoff.
 
 ```
-Intent → Contract → Decompose → Build → Verify → [Debug if failed] → Integrate → Gap Analysis → Repeat
+User (in CAIRN): "My disk is almost full, can you help?"
+
+CAIRN: ## Handoff Proposed: CAIRN → ReOS
+
+       **Why I'm suggesting this handoff:**
+       This is a system administration task (disk management) that
+       ReOS specializes in.
+
+       **About ReOS:**
+       ReOS is the System Agent, specializing in Linux system
+       administration, services, packages, processes, and terminal operations.
+
+       **Your choice:**
+       You can confirm this handoff, or stay with CAIRN if you prefer.
+
+       [Confirm] [Reject]
 ```
 
-1. **Intent Discovery**: Understands what you want from the prompt, your project context (The Play), and the codebase
-2. **Contract Generation**: Defines explicit, testable success criteria—actual test code, not vague descriptions
-3. **Decomposition**: Breaks the contract into atomic steps
-4. **Build**: Writes code for the most concrete step
-5. **Verify**: Runs tests, checks compilation—execution output is ground truth
-6. **Debug**: If verification fails, analyzes the error and attempts fixes (up to 3 retries)
-7. **Integrate**: Merges verified code into the repository
-8. **Gap Analysis**: What remains? Loop until complete.
-
-**Perspective Shifting**: Each phase uses a different AI persona:
-- **Analyst**: Understands intent deeply before acting
-- **Architect**: Designs testable contracts
-- **Engineer**: Writes minimal, correct code
-- **Critic**: Skeptical of AI output, trusts test results
-- **Debugger**: Diagnoses failures, proposes fixes
-- **Integrator**: Merges safely
+**Design Principles:**
+- **15 tools per agent max** (LLM cognitive research shows degradation beyond ~20)
+- **Explicit transitions** with verbose explanations
+- **User always in control** - reject any handoff
+- **Structured context passing** - receiving agent knows exactly what you need
+- **Flexible agents** - handle simple out-of-domain tasks without handoff
 
 ---
 
 ## The Play - Your Personal Knowledge System
 
-ReOS includes a hierarchical knowledge system that provides context across everything you do:
+The Play provides context across everything you do:
 
 | Level | Time Horizon | Example |
 |-------|--------------|---------|
@@ -126,7 +169,7 @@ ReOS includes a hierarchical knowledge system that provides context across every
 | **Scenes** | > 1 month | "Launch MVP", "Q1 Platform Migration" |
 | **Beats** | > 1 week | "Set up CI/CD", "Implement auth" |
 
-When you assign a repository to an Act, ReOS enters Code Mode for requests in that context. The Play provides the "why" behind your code—what you're building and where it fits in your life.
+CAIRN tracks activity across The Play—when you last touched projects, what's active, what's stale. When you assign a repository to an Act, RIVA activates for coding requests in that context.
 
 ---
 
@@ -135,11 +178,11 @@ When you assign a repository to an Act, ReOS enters Code Mode for requests in th
 ### You're Always in Control
 
 - **Diff preview**: See exactly what will change before any file is modified
-- **Approval required**: All file changes, commands, and plans require your explicit OK
+- **Approval required**: All file changes, commands, and handoffs require your explicit OK
 - **Automatic backups**: Every file modification is backed up
 - **Rollback**: Undo any change
 
-### Circuit Breakers (The Paperclip Problem)
+### Circuit Breakers
 
 Built-in limits to prevent runaway operations:
 
@@ -147,19 +190,17 @@ Built-in limits to prevent runaway operations:
 |------------|-------|-------------|
 | Max operations per task | 25 | ✓ Enforced |
 | Max execution time | 5 minutes | ✓ Enforced |
-| Max sudo escalations | 3 | ✓ Enforced |
+| Max sudo escalations | 3 per session | ✓ Enforced |
 | Debug retry attempts | 3 | ✓ Enforced |
 | Human checkpoint | After 2 automated recoveries | ✓ Enforced |
-| Rate limiting | Per-category (auth, service, package) | ✓ Enforced |
-
-If the AI tries to "fix" your nginx install by deleting system logs? **Blocked.** Tries to run 100 commands? **Stopped at 25.**
+| Tools per agent | 15 max | ✓ Enforced |
 
 ### Privacy
 
-- **Local-first**: With Ollama, code never leaves your machine
+- **Local-first**: With Ollama, everything stays on your machine
 - **No telemetry**: We don't know you exist
 - **Open source**: Audit everything
-- **Your choice**: Use Ollama locally, or cloud APIs (Anthropic, OpenAI) if you prefer
+- **Your choice**: Use Ollama locally, or cloud APIs if you prefer
 
 ---
 
@@ -167,7 +208,7 @@ If the AI tries to "fix" your nginx install by deleting system logs? **Blocked.*
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                           ReOS                                       │
+│                        TALKING ROCK                                   │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │   ┌─────────────────────────────────────────────────────────────┐   │
@@ -176,96 +217,33 @@ If the AI tries to "fix" your nginx install by deleting system logs? **Blocked.*
 │   └─────────────────────────────────────────────────────────────┘   │
 │                               │                                      │
 │   ┌───────────────────────────┴───────────────────────────┐         │
+│   │                   Agent Layer (15 tools each)          │         │
 │   │                                                        │         │
-│   │   ┌─────────────────┐         ┌─────────────────────┐ │         │
-│   │   │   Linux Mode    │         │     Code Mode       │ │         │
-│   │   │                 │         │                     │ │         │
-│   │   │ • System info   │         │ • Intent discovery  │ │         │
-│   │   │ • Services      │         │ • Contract-based    │ │         │
-│   │   │ • Packages      │         │ • Test-first        │ │         │
-│   │   │ • Containers    │         │ • Self-debugging    │ │         │
-│   │   │ • Files         │         │ • Perspective shift │ │         │
-│   │   └─────────────────┘         └─────────────────────┘ │         │
-│   │                                                        │         │
-│   │   ┌─────────────────────────────────────────────────┐ │         │
-│   │   │              Shared Infrastructure               │ │         │
-│   │   │                                                  │ │         │
-│   │   │  The Play (KB)  │  Safety Layer  │  Model Backend │         │
-│   │   │                                                  │ │         │
-│   │   │  Ollama │ Anthropic │ OpenAI │ Local llama.cpp  │ │         │
-│   │   └─────────────────────────────────────────────────┘ │         │
+│   │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │         │
+│   │   │   CAIRN     │  │    ReOS     │  │    RIVA     │   │         │
+│   │   │  Attention  │  │   System    │  │    Code     │   │         │
+│   │   │             │  │             │  │             │   │         │
+│   │   │ • KB CRUD   │  │ • Shell     │  │ • Read/Edit │   │         │
+│   │   │ • Calendar  │  │ • Services  │  │ • Search    │   │         │
+│   │   │ • Contacts  │  │ • Packages  │  │ • Tests     │   │         │
+│   │   │ • Surfacing │  │ • Docker    │  │ • Git       │   │         │
+│   │   └─────────────┘  └─────────────┘  └─────────────┘   │         │
+│   │           │                │                │          │         │
+│   │           └────────────────┼────────────────┘          │         │
+│   │                    Handoff System                      │         │
+│   │              (User-gated transitions)                  │         │
 │   └────────────────────────────────────────────────────────┘         │
+│                                                                      │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │                  Shared Infrastructure                       │   │
+│   │                                                              │   │
+│   │  The Play (KB)  │  CAIRN Store  │  Safety Layer  │  Handoff │   │
+│   │                                                              │   │
+│   │  Ollama │ Anthropic │ OpenAI │ Local llama.cpp              │   │
+│   └─────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## Local-First Reliability Philosophy
-
-ReOS is built for a fundamentally different environment than commercial AI coding tools.
-
-### The Reality of Local Models
-
-Commercial tools like Cursor and Copilot assume:
-- GPT-4/Claude-level reliability (valid JSON 99%+ of the time)
-- Large context windows that preserve all details
-- Consistent instruction following
-- Fast, always-available cloud infrastructure
-
-Local models (Ollama + Mistral/Llama/etc.) have different characteristics:
-- JSON formatting may fail more often
-- Smaller context windows = lost details
-- Variable instruction following quality
-- Need explicit examples, not just instructions
-
-**ReOS is designed for unreliable LLM responses as the norm, not the exception.**
-
-### Graceful Degradation, Not Quality Cliffs
-
-Every layer of ReOS produces useful output. When the LLM fails, we don't fall off a cliff:
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ TIER 1: LLM Success                                                  │
-│ ├── Full intent understanding                                        │
-│ ├── Sophisticated decomposition                                      │
-│ └── Generated code with tests                                        │
-├─────────────────────────────────────────────────────────────────────┤
-│ TIER 2: LLM Partial Success                                          │
-│ ├── Intent understood, JSON malformed                                │
-│ ├── Smart heuristic fallback with real implementations               │
-│ └── User notified of degraded mode                                   │
-├─────────────────────────────────────────────────────────────────────┤
-│ TIER 3: LLM Failure                                                  │
-│ ├── Pattern-based code generation (factorial, fibonacci, etc.)       │
-│ ├── Template-driven scaffolding                                      │
-│ └── Transparent "needs completion" markers                           │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Execution is Ground Truth
-
-ReOS doesn't trust the LLM's claim that code works. We verify:
-
-1. **Syntax Check**: Code parses without errors
-2. **Import Check**: Module can be imported
-3. **Function Check**: Functions are callable
-4. **Test Execution**: Actual tests run and pass
-
-*"Verified" means "executed successfully," not "file was created."*
-
-### Transparency Over Hidden Failures
-
-When quality degrades, the user knows:
-
-```
-[QUALITY: TIER 1] ✓ LLM generated verified code
-[QUALITY: TIER 2] ⚠ Heuristic fallback (LLM JSON failed)
-[QUALITY: TIER 3] ⚠ Pattern-based generation (needs review)
-```
-
-This philosophy—build for unreliability, degrade gracefully, verify with execution, be transparent—is what makes local-first AI actually work.
 
 ---
 
@@ -276,7 +254,7 @@ This philosophy—build for unreliability, degrade gracefully, verify with execu
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull llama3.2
 
-# 2. Clone and install ReOS
+# 2. Clone and install
 git clone https://github.com/sefton37/ReOS
 cd ReOS
 pip install -e .
@@ -286,59 +264,64 @@ cd apps/reos-tauri
 npm install
 npm run tauri:dev
 
-# 4. (Optional) Assign a repository to an Act for Code Mode
-# In the UI: Select an Act → Settings → Assign Repository
+# 4. Start with CAIRN (default), switch agents as needed
 ```
 
 ---
 
-## What's Built (Current State)
+## What's Built
 
-### Linux Mode (Complete)
+### CAIRN (New - Attention Minder)
+- [x] Knowledge base integration with The Play
+- [x] Kanban state tracking (active, backlog, waiting, someday, done)
+- [x] Activity tracking (last touched, touch count)
+- [x] Priority management (user-driven, 1-5 scale)
+- [x] Time awareness (due dates, defer until, calendar)
+- [x] Thunderbird integration (contacts, calendar, events)
+- [x] Contact knowledge graph (link people to projects)
+- [x] Smart surfacing algorithms
+- [x] 22 MCP tools
+
+### ReOS (System Agent)
 - [x] Natural language system control
 - [x] Deep system understanding (containers, services, packages, processes)
 - [x] Multi-step plan generation with approval workflow
 - [x] Safety layer (command blocking, risk assessment, rate limiting)
 - [x] Circuit breakers (25 ops, 5 min, 3 sudo)
-- [x] Conversation persistence
 
-### Code Mode (Core Complete, Semantic Understanding Building)
+### RIVA (Code Agent)
 - [x] Repository assignment to Acts
-- [x] Code vs sysadmin request routing
 - [x] Intent discovery (prompt + Play + codebase patterns)
 - [x] Contract-based development (testable success criteria)
-- [x] Perspective shifting (Analyst → Architect → Engineer → Critic → Debugger)
+- [x] Test-first approach (generates actual test code)
 - [x] Self-debugging loop (analyze failures, apply fixes, retry)
-- [x] Execution-based verification (run tests, trust output)
-- [x] Gap analysis and iterative completion
-- [x] Quality tier tracking (transparency when LLM falls back to heuristics)
-- [ ] Semantic code understanding (dependency graphs, symbol tables) — *in progress*
+- [x] Quality tier tracking (transparency when LLM falls back)
+- [x] Multi-language tools (Python, TypeScript, Rust, Go)
 
-### What's Next (See Roadmap)
-- [ ] Repository map (dependency graph, semantic search)
-- [ ] Diff preview UI (see changes before applying)
-- [ ] Test-first contracts (generate actual test code)
-- [ ] Long-term memory (remember decisions, patterns, corrections)
-- [ ] LSP integration (real-time type checking)
-- [ ] Multi-path exploration (try multiple approaches)
+### Handoff System (New)
+- [x] Structured context passing (distilled, not full history)
+- [x] User confirmation gates (switching is always user-gated)
+- [x] Explicit, verbose transition messaging
+- [x] RIVA-style intent verification for multi-domain requests
+- [x] 15-tool cap per agent (validated)
+- [x] Flexible agents (handle simple out-of-domain tasks)
 
 ---
 
-## Comparison: ReOS vs Commercial Tools
+## Comparison: Talking Rock vs Commercial Tools
 
-| Capability | Cursor | Copilot | Devin | ReOS |
-|------------|--------|---------|-------|------|
+| Capability | Cursor | Copilot | Devin | Talking Rock |
+|------------|--------|---------|-------|--------------|
 | Code completion | ✓ | ✓ | ✓ | ✓ |
 | Multi-file editing | ✓ | Partial | ✓ | ✓ |
 | Test execution | ✓ | ✗ | ✓ | ✓ |
 | Self-debugging | Partial | ✗ | ✓ | ✓ |
-| Codebase awareness | ✓ | Partial | ✓ | Building |
-| Long-term memory | ✗ | ✗ | ✓ | Planned |
-| **Local-First Option** | ✗ | ✗ | ✗ | **✓** |
+| **Life organization** | ✗ | ✗ | ✗ | **✓ (CAIRN)** |
+| **Linux sysadmin** | ✗ | ✗ | ✗ | **✓ (ReOS)** |
+| **Local-First** | ✗ | ✗ | ✗ | **✓** |
 | **Open Source** | ✗ | ✗ | ✗ | **✓** |
 | **No Subscription** | ✗ | ✗ | ✗ | **✓** |
-| **Data Privacy (with local)** | ✗ | ✗ | ✗ | **✓** |
-| Linux sysadmin | ✗ | ✗ | ✗ | **✓** |
+| **Data Privacy** | ✗ | ✗ | ✗ | **✓** |
 
 ---
 
@@ -346,22 +329,22 @@ npm run tauri:dev
 
 Software is eating the world. AI is eating software. And a handful of companies want to be the landlords of AI—charging rent forever for tools that could run on your own hardware.
 
-ReOS is the alternative:
+Talking Rock is the alternative:
 - **User sovereignty**: You control the AI, not the other way around
 - **Transparency**: See every decision, every step, every line of reasoning
 - **Privacy**: With local models, your code and data stay on your machine
 - **Freedom**: No lock-in, no subscription, no "we changed our pricing"
-- **Community**: Open source means we all make it better together
+- **Holistic**: One system for life, work, and code—not three separate tools
 
-The trillion-dollar companies have resources we don't. But they also have incentives we don't—engagement metrics, retention, lock-in. ReOS can be optimized purely for what's best for the user.
+The trillion-dollar companies have resources we don't. But they also have incentives we don't—engagement metrics, retention, lock-in. Talking Rock is optimized purely for what's best for the user.
 
-**The goal: Make the best AI coding assistant in the world. Then give it away.**
+**The goal: Make the best AI assistant in the world. Then give it away.**
 
 ---
 
 ## Contributing
 
-ReOS is open source (MIT). Contributions welcome:
+Talking Rock is open source (MIT). Contributions welcome:
 - Bug reports and feature requests via GitHub Issues
 - Code contributions via Pull Requests
 - Documentation improvements
@@ -378,14 +361,15 @@ See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines.
 - Node.js 18+ (for Tauri UI)
 - Rust toolchain (for Tauri)
 - Ollama with a local model (or API key for cloud models)
+- Thunderbird (optional, for calendar/contacts integration)
 
 ---
 
 ## Links
 
 - [Technical Roadmap](docs/tech-roadmap.md) - Full implementation plan
-- [Security Design](docs/security-design.md) - How ReOS protects your system
-- [ReOS Charter](.github/ReOS_charter.md) - Philosophy and principles
+- [Security Design](docs/security-design.md) - How Talking Rock protects your system
+- [CAIRN Architecture](docs/cairn_architecture.md) - Attention minder design
 - [The Play Documentation](docs/the-play.md) - Knowledge system details
 
 ---
@@ -396,4 +380,4 @@ MIT
 
 ---
 
-*ReOS: Because AI should work for you, not rent from you.*
+*Talking Rock: AI that works for you, not rents from you.*
