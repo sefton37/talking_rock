@@ -1189,20 +1189,30 @@ MUST SATISFY:
 
             steps = []
             for s in data.get("steps", []):
+                # Determine action - use LLM's choice or infer from file existence
+                action = s.get("action")
+                target_file = s.get("target_file")
+
+                if not action:
+                    # LLM didn't specify action - infer from file existence
+                    if target_file:
+                        full_path = self.sandbox.repo_path / target_file
+                        action = "edit_file" if full_path.exists() else "create_file"
+                    else:
+                        action = "create_file"  # No target = likely new file
+
                 step = ContractStep(
                     id=_generate_id("step"),
                     description=s.get("description", ""),
                     target_criteria=[c.id for c in criteria],
-                    action=s.get("action", "edit_file"),
-                    target_file=s.get("target_file"),
+                    action=action,
+                    target_file=target_file,
                     command=s.get("command"),
                 )
                 steps.append(step)
-                action = s.get("action", "edit_file")
-                target = s.get("target_file", "")
                 self._notify(f"    → [{action}] {s.get('description', '')[:35]}...")
-                if target:
-                    self._notify(f"      file: {target}")
+                if target_file:
+                    self._notify(f"      file: {target_file}")
 
             # Log parsed steps
             self._log("steps_parsed", f"Parsed {len(steps)} steps from LLM", {
@@ -1229,16 +1239,34 @@ MUST SATISFY:
         criteria: list[AcceptanceCriterion],
         intent: DiscoveredIntent,
     ) -> list[ContractStep]:
-        """Create steps specifically for unfulfilled criteria."""
+        """Create steps specifically for unfulfilled criteria.
+
+        Intelligently chooses create_file vs edit_file based on whether
+        the target file already exists in the repository.
+        """
         steps = []
         for criterion in criteria:
+            # Determine action based on file existence
+            action = "edit_file"  # Default
+            target_file = criterion.target_file
+
+            if target_file:
+                # Check if file exists in repo
+                full_path = self.sandbox.repo_path / target_file
+                if not full_path.exists():
+                    action = "create_file"
+            else:
+                # No target file specified - likely needs new file
+                # Use create_file as safer default for new functionality
+                action = "create_file"
+
             steps.append(
                 ContractStep(
                     id=_generate_id("step"),
                     description=f"Fulfill: {criterion.description}",
                     target_criteria=[criterion.id],
-                    action="edit_file",
-                    target_file=criterion.target_file,
+                    action=action,
+                    target_file=target_file,
                 )
             )
         return steps
