@@ -5,6 +5,7 @@
  * Communicates with the Python kernel via JSON-RPC over stdio.
  */
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
 import './style.css';
 
@@ -762,12 +763,28 @@ function buildUi() {
     const actTitle = textInput('');
     const actNotes = textArea('', 70);
     const actRepoPath = textInput('');
-    actRepoPath.placeholder = '~/projects/my-project';
+    actRepoPath.placeholder = '/path/to/project';
+    actRepoPath.style.flex = '1';
     const actRepoRow = el('div');
     actRepoRow.style.display = 'flex';
     actRepoRow.style.gap = '8px';
     actRepoRow.style.alignItems = 'center';
-    const actRepoAssign = smallButton('Set Repo');
+    actRepoRow.style.flexWrap = 'wrap';
+
+    // Browse button for folder picker
+    const actRepoBrowse = smallButton('Browse...');
+    actRepoBrowse.style.background = 'rgba(59, 130, 246, 0.3)';
+    actRepoBrowse.style.borderColor = '#3b82f6';
+    actRepoBrowse.style.color = '#60a5fa';
+
+    const actRepoOrLabel = el('span');
+    actRepoOrLabel.textContent = 'or';
+    actRepoOrLabel.style.color = 'rgba(255, 255, 255, 0.4)';
+    actRepoOrLabel.style.fontSize = '11px';
+
+    const actRepoAssign = smallButton('Set');
+    actRepoRow.appendChild(actRepoBrowse);
+    actRepoRow.appendChild(actRepoOrLabel);
     actRepoRow.appendChild(actRepoPath);
     actRepoRow.appendChild(actRepoAssign);
     const actRepoStatus = el('div');
@@ -821,33 +838,54 @@ function buildUi() {
       })();
     });
 
-    actRepoAssign.addEventListener('click', () => {
+    // Helper to assign repo path
+    const assignActRepo = async (repoPath: string) => {
+      if (!activeActId) return;
+      if (!repoPath) {
+        actRepoStatus.textContent = 'Please select or enter a path';
+        actRepoStatus.style.color = '#ef4444';
+        return;
+      }
+      try {
+        actRepoStatus.textContent = 'Setting...';
+        actRepoStatus.style.color = '#60a5fa';
+        const res = await kernelRequest('play/acts/assign_repo', {
+          act_id: activeActId,
+          repo_path: repoPath,
+        }) as { success: boolean; repo_path: string };
+        actRepoStatus.textContent = `Set: ${res.repo_path}`;
+        actRepoStatus.style.color = '#22c55e';
+        actRepoPath.value = res.repo_path;
+        await refreshActs();
+      } catch (err) {
+        actRepoStatus.textContent = `Error: ${String(err)}`;
+        actRepoStatus.style.color = '#ef4444';
+      }
+    };
+
+    // Browse button - opens folder picker
+    actRepoBrowse.addEventListener('click', () => {
       void (async () => {
-        if (!activeActId) return;
-        const repoPath = actRepoPath.value.trim();
-        if (!repoPath) {
-          actRepoStatus.textContent = 'Please enter a repository path';
-          actRepoStatus.style.color = '#ef4444';
-          return;
-        }
         try {
-          actRepoAssign.disabled = true;
-          actRepoAssign.textContent = 'Setting...';
-          const res = await kernelRequest('play/acts/assign_repo', {
-            act_id: activeActId,
-            repo_path: repoPath,
-          }) as { success: boolean; repo_path: string };
-          actRepoStatus.textContent = `Set: ${res.repo_path}`;
-          actRepoStatus.style.color = '#22c55e';
-          actRepoPath.value = res.repo_path;
-          await refreshActs();
+          const selected = await openDialog({
+            directory: true,
+            multiple: false,
+            title: 'Select Repository Folder',
+          });
+          if (selected && typeof selected === 'string') {
+            await assignActRepo(selected);
+          }
         } catch (err) {
           actRepoStatus.textContent = `Error: ${String(err)}`;
           actRepoStatus.style.color = '#ef4444';
-        } finally {
-          actRepoAssign.disabled = false;
-          actRepoAssign.textContent = 'Set Repo';
         }
+      })();
+    });
+
+    // Manual text entry
+    actRepoAssign.addEventListener('click', () => {
+      void (async () => {
+        await assignActRepo(actRepoPath.value.trim());
       })();
     });
 
