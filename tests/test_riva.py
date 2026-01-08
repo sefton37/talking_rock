@@ -852,3 +852,135 @@ class TestUICheckpoint:
 
         # Should have received FAILURE auto-judgment
         assert received_auto[0] == Judgment.FAILURE
+
+
+# ==============================================================================
+# Tool Integration Tests
+# ==============================================================================
+
+class TestGatherContext:
+    """Test gather_context function for tool integration."""
+
+    @pytest.fixture
+    def sandbox(self):
+        sandbox = MagicMock()
+        sandbox.run_command.return_value = (0, "", "")
+        return sandbox
+
+    @pytest.fixture
+    def mock_tool_provider(self):
+        """Create a mock tool provider."""
+        from reos.code_mode.tools import ToolResult
+
+        provider = MagicMock()
+        provider.has_tool.return_value = True
+        provider.call_tool.return_value = ToolResult(
+            success=True,
+            output="Found pattern in file.py:10",
+            source="test",
+        )
+        return provider
+
+    def test_gather_context_returns_empty_without_provider(self, sandbox):
+        """Should return empty string when no tool_provider."""
+        from reos.code_mode.intention import gather_context
+
+        ctx = WorkContext(
+            sandbox=sandbox,
+            llm=None,
+            checkpoint=AutoCheckpoint(sandbox),
+            tool_provider=None,  # No provider
+        )
+
+        intention = Intention.create("Create factorial function", "Function works")
+        result = gather_context(intention, ctx)
+
+        assert result == ""
+
+    def test_gather_context_searches_codebase(self, sandbox, mock_tool_provider):
+        """Should search codebase for keywords."""
+        from reos.code_mode.intention import gather_context
+
+        ctx = WorkContext(
+            sandbox=sandbox,
+            llm=None,
+            checkpoint=AutoCheckpoint(sandbox),
+            tool_provider=mock_tool_provider,
+        )
+
+        intention = Intention.create("Fix factorial function", "Returns correct values")
+        result = gather_context(intention, ctx)
+
+        # Should have called grep tool
+        assert mock_tool_provider.call_tool.called
+        assert "factorial" in str(mock_tool_provider.call_tool.call_args_list)
+
+    def test_gather_context_gets_structure_for_create(self, sandbox, mock_tool_provider):
+        """Should get project structure when creating files."""
+        from reos.code_mode.intention import gather_context
+
+        ctx = WorkContext(
+            sandbox=sandbox,
+            llm=None,
+            checkpoint=AutoCheckpoint(sandbox),
+            tool_provider=mock_tool_provider,
+        )
+
+        intention = Intention.create("Create new module for parsing", "Module exists")
+        result = gather_context(intention, ctx)
+
+        # Should have called get_structure
+        call_args = [str(c) for c in mock_tool_provider.call_tool.call_args_list]
+        assert any("get_structure" in c for c in call_args)
+
+    def test_gather_context_searches_web_for_errors(self, sandbox, mock_tool_provider):
+        """Should search web when intention mentions errors."""
+        from reos.code_mode.intention import gather_context
+
+        ctx = WorkContext(
+            sandbox=sandbox,
+            llm=None,
+            checkpoint=AutoCheckpoint(sandbox),
+            tool_provider=mock_tool_provider,
+        )
+
+        intention = Intention.create("Fix the IndexError in parser", "No more errors")
+        result = gather_context(intention, ctx)
+
+        # Should have called web_search
+        call_args = [str(c) for c in mock_tool_provider.call_tool.call_args_list]
+        assert any("web_search" in c for c in call_args)
+
+    def test_workcontext_accepts_tool_provider(self, sandbox, mock_tool_provider):
+        """WorkContext should accept tool_provider argument."""
+        ctx = WorkContext(
+            sandbox=sandbox,
+            llm=None,
+            checkpoint=AutoCheckpoint(sandbox),
+            tool_provider=mock_tool_provider,
+        )
+
+        assert ctx.tool_provider is mock_tool_provider
+
+    def test_extract_keywords_helper(self):
+        """Test keyword extraction helper."""
+        from reos.code_mode.intention import _extract_keywords
+
+        keywords = _extract_keywords("Create a factorial function in math_utils.py")
+
+        # Should extract meaningful keywords
+        assert "factorial" in keywords
+        assert "math_utils" in keywords
+        # Should not include stopwords
+        assert "create" not in keywords
+        assert "the" not in keywords
+        assert "a" not in keywords
+
+    def test_detect_library_hints_helper(self):
+        """Test library detection helper."""
+        from reos.code_mode.intention import _detect_library_hints
+
+        libs = _detect_library_hints("Add a FastAPI endpoint with pytest tests")
+
+        assert "fastapi" in libs
+        assert "pytest" in libs

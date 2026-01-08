@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from reos.code_mode.sandbox import CodeSandbox
     from reos.code_mode.session_logger import SessionLogger
     from reos.code_mode.quality import QualityTracker
+    from reos.code_mode.tools import ToolProvider
     from reos.providers import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -405,6 +406,7 @@ class WorkContext:
     checkpoint: HumanCheckpoint | AutoCheckpoint
     session_logger: "SessionLogger | None" = None
     quality_tracker: "QualityTracker | None" = None  # Track quality tiers
+    tool_provider: "ToolProvider | None" = None  # Tools for gathering context
     max_cycles_per_intention: int = 5
     max_depth: int = 10
 
@@ -505,6 +507,139 @@ def should_decompose(intention: Intention, cycle: Cycle | None, ctx: WorkContext
     return False
 
 
+def gather_context(intention: Intention, ctx: WorkContext) -> str:
+    """Gather relevant context using tools before taking action.
+
+    When RIVA is uncertain or needs more information, this function uses
+    the tool provider to search the codebase and web for relevant context.
+
+    Returns a context string to include in LLM prompts.
+    """
+    if ctx.tool_provider is None:
+        return ""
+
+    if ctx.session_logger:
+        ctx.session_logger.log_info("riva", "gather_context",
+            f"Gathering context for: {intention.what[:50]}...")
+
+    context_parts = []
+    what_lower = intention.what.lower()
+
+    # Extract potential keywords from intention
+    keywords = _extract_keywords(intention.what)
+
+    # 1. Search codebase for relevant patterns
+    if ctx.tool_provider.has_tool("grep"):
+        for keyword in keywords[:3]:  # Limit to top 3 keywords
+            try:
+                result = ctx.tool_provider.call_tool("grep", {
+                    "pattern": keyword,
+                    "max_results": 5,
+                })
+                if result.success and result.output and "No matches" not in result.output:
+                    context_parts.append(f"[Codebase search for '{keyword}']\n{result.output[:500]}")
+            except Exception as e:
+                logger.debug("Grep search failed for '%s': %s", keyword, e)
+
+    # 2. Look at file structure if we need to understand project layout
+    if any(w in what_lower for w in ["create", "add", "implement", "structure"]):
+        if ctx.tool_provider.has_tool("get_structure"):
+            try:
+                result = ctx.tool_provider.call_tool("get_structure", {"max_depth": 2})
+                if result.success:
+                    context_parts.append(f"[Project structure]\n{result.output[:800]}")
+            except Exception as e:
+                logger.debug("Get structure failed: %s", e)
+
+    # 3. Web search for documentation if working with external libraries
+    library_hints = _detect_library_hints(intention.what)
+    if library_hints and ctx.tool_provider.has_tool("fetch_docs"):
+        for lib in library_hints[:2]:  # Limit to 2 libraries
+            try:
+                result = ctx.tool_provider.call_tool("fetch_docs", {"library": lib})
+                if result.success:
+                    context_parts.append(f"[Documentation for '{lib}']\n{result.output[:600]}")
+            except Exception as e:
+                logger.debug("Fetch docs failed for '%s': %s", lib, e)
+
+    # 4. If there are errors mentioned, search for solutions
+    if any(w in what_lower for w in ["error", "fix", "debug", "exception", "failed"]):
+        if ctx.tool_provider.has_tool("web_search"):
+            # Extract error patterns from intention
+            error_context = intention.what
+            if intention.trace:
+                last_result = intention.trace[-1].result
+                if "error" in last_result.lower() or "exception" in last_result.lower():
+                    error_context = last_result[:200]
+
+            try:
+                result = ctx.tool_provider.call_tool("web_search", {
+                    "query": f"python {error_context[:100]} solution",
+                    "num_results": 2,
+                })
+                if result.success:
+                    context_parts.append(f"[Web search for solution]\n{result.output[:500]}")
+            except Exception as e:
+                logger.debug("Web search failed: %s", e)
+
+    context = "\n\n".join(context_parts)
+
+    if ctx.session_logger and context:
+        ctx.session_logger.log_debug("riva", "context_gathered",
+            f"Gathered {len(context_parts)} context sections ({len(context)} chars)")
+
+    return context
+
+
+def _extract_keywords(text: str) -> list[str]:
+    """Extract meaningful keywords from intention text."""
+    import re
+
+    # Remove common words
+    stopwords = {
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
+        "be", "have", "has", "had", "do", "does", "did", "will", "would",
+        "could", "should", "may", "might", "must", "can", "this", "that",
+        "these", "those", "it", "its", "i", "we", "you", "they", "he", "she",
+        "create", "add", "implement", "make", "build", "write", "function",
+        "file", "code", "new", "using", "use", "need", "want", "please",
+    }
+
+    # Extract words
+    words = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', text.lower())
+
+    # Filter and dedupe
+    keywords = []
+    seen = set()
+    for word in words:
+        if word not in stopwords and word not in seen and len(word) > 2:
+            keywords.append(word)
+            seen.add(word)
+
+    return keywords[:10]  # Limit to 10 keywords
+
+
+def _detect_library_hints(text: str) -> list[str]:
+    """Detect mentions of known libraries in text."""
+    text_lower = text.lower()
+
+    # Common libraries we might want docs for
+    known_libs = [
+        "python", "requests", "flask", "django", "fastapi", "pytest",
+        "numpy", "pandas", "pygame", "sqlalchemy", "pydantic",
+        "react", "nextjs", "typescript", "node",
+        "rust", "tokio", "serde",
+    ]
+
+    detected = []
+    for lib in known_libs:
+        if lib in text_lower:
+            detected.append(lib)
+
+    return detected
+
+
 def decompose(intention: Intention, ctx: WorkContext) -> list[Intention]:
     """Break intention into sub-intentions.
 
@@ -523,6 +658,12 @@ def decompose(intention: Intention, ctx: WorkContext) -> list[Intention]:
         # Fallback: simple heuristic decomposition
         return _heuristic_decompose(intention, ctx)
 
+    # Gather context to help with decomposition
+    tool_context = gather_context(intention, ctx)
+    context_section = ""
+    if tool_context:
+        context_section = f"\n\n[Codebase Context]\n{tool_context[:1500]}"
+
     # Use LLM to decompose
     system_prompt = """You are decomposing a software task into smaller, verifiable sub-tasks.
 
@@ -534,6 +675,7 @@ Rules:
 5. Include acceptance criteria for each sub-task
 6. IMPORTANT: If multiple functions belong in the same file, mention the filename in each sub-task
 7. First sub-task should create the file, subsequent tasks should ADD to that same file
+8. Use the codebase context to understand existing patterns and structure
 
 Respond with ONLY a JSON array of objects with "what" and "acceptance" fields.
 
@@ -548,6 +690,7 @@ Example - creating multiple functions in one module:
 
 INTENTION: {intention.what}
 ACCEPTANCE: {intention.acceptance}
+{context_section}
 
 Provide sub-intentions that are concrete and testable.
 If creating multiple functions for one module, reference the SAME filename in each sub-task."""
@@ -711,6 +854,11 @@ def determine_next_action(intention: Intention, ctx: WorkContext) -> tuple[str, 
     if existing_files:
         existing_context = f"\n\nExisting files in repo: {', '.join(existing_files[:10])}"
         existing_context += "\nIMPORTANT: If adding to an existing file, use 'edit' not 'create'."
+
+    # Gather additional context using tools when available
+    tool_context = gather_context(intention, ctx)
+    if tool_context:
+        existing_context += f"\n\n[Additional Context from Tools]\n{tool_context[:2000]}"
 
     system_prompt = """You are determining the next action to satisfy an intention.
 

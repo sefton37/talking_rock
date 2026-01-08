@@ -116,6 +116,7 @@ from reos.code_mode.intention import (
     can_verify_directly,
     should_decompose,
     decompose,
+    gather_context,
 )
 
 # Supporting - Multi-path Exploration
@@ -249,6 +250,7 @@ __all__ = [
     "can_verify_directly",
     "should_decompose",
     "decompose",
+    "gather_context",
     "StepExplorer",
     "StepAlternative",
     "ExplorationState",
