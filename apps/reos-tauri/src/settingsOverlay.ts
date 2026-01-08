@@ -140,6 +140,9 @@ interface SafetySettings {
   current_sudo_count: number;
   // Command limits
   max_command_length: number;
+  // Agent execution limits
+  max_iterations: number;
+  wall_clock_timeout_seconds: number;
   // Validation limits
   max_service_name_length: number;
   max_container_id_length: number;
@@ -443,6 +446,8 @@ export function createSettingsOverlay(onClose?: () => void): SettingsOverlay {
         max_sudo_escalations: 3,
         current_sudo_count: 0,
         max_command_length: 4096,
+        max_iterations: 10,
+        wall_clock_timeout_seconds: 300,
         max_service_name_length: 256,
         max_container_id_length: 256,
         max_package_name_length: 256,
@@ -2010,6 +2015,127 @@ When executing:
     commandCard.appendChild(cmdSlider);
     commandSection.appendChild(commandCard);
     content.appendChild(commandSection);
+
+    // ============ Agent Execution Limits ============
+    const agentSection = createSection('Agent Execution Limits');
+    agentSection.innerHTML += `
+      <div style="color: rgba(255,255,255,0.6); font-size: 12px; margin-bottom: 12px;">
+        Limits on how long agents can run. Prevents runaway execution and infinite loops.
+      </div>
+    `;
+
+    const agentGrid = el('div');
+    agentGrid.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr; gap: 12px;';
+
+    // Max Iterations
+    const iterCard = el('div');
+    iterCard.style.cssText = `
+      padding: 16px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 8px;
+      border-left: 3px solid #8b5cf6;
+    `;
+    iterCard.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div>
+          <div style="font-weight: 500; color: #fff;">Max Iterations</div>
+          <div style="font-size: 11px; color: rgba(255,255,255,0.5);">
+            Loops before forced stop
+          </div>
+        </div>
+        <div id="iter-value" style="font-family: monospace; font-size: 18px; color: #8b5cf6;">
+          ${safetySettings.max_iterations}
+        </div>
+      </div>
+    `;
+
+    const iterSlider = el('input') as HTMLInputElement;
+    iterSlider.type = 'range';
+    iterSlider.min = '3';
+    iterSlider.max = '50';
+    iterSlider.value = String(safetySettings.max_iterations);
+    iterSlider.style.cssText = 'width: 100%; accent-color: #8b5cf6;';
+
+    iterSlider.addEventListener('input', () => {
+      const valueEl = iterCard.querySelector('#iter-value');
+      if (valueEl) valueEl.textContent = iterSlider.value;
+    });
+
+    iterSlider.addEventListener('change', async () => {
+      try {
+        await kernelRequest('safety/set_max_iterations', {
+          max_iterations: parseInt(iterSlider.value),
+        });
+        safetySettings!.max_iterations = parseInt(iterSlider.value);
+      } catch (e) {
+        console.error('Failed to update max iterations:', e);
+      }
+    });
+
+    iterCard.appendChild(iterSlider);
+    agentGrid.appendChild(iterCard);
+
+    // Wall Clock Timeout
+    const timeoutCard = el('div');
+    timeoutCard.style.cssText = `
+      padding: 16px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 8px;
+      border-left: 3px solid #ec4899;
+    `;
+
+    const formatTime = (seconds: number): string => {
+      if (seconds >= 60) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return secs > 0 ? `${mins}m ${secs}s` : `${mins} min`;
+      }
+      return `${seconds}s`;
+    };
+
+    timeoutCard.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div>
+          <div style="font-weight: 500; color: #fff;">Wall Clock Timeout</div>
+          <div style="font-size: 11px; color: rgba(255,255,255,0.5);">
+            Max real-time execution
+          </div>
+        </div>
+        <div id="timeout-value" style="font-family: monospace; font-size: 18px; color: #ec4899;">
+          ${formatTime(safetySettings.wall_clock_timeout_seconds)}
+        </div>
+      </div>
+    `;
+
+    const timeoutSlider = el('input') as HTMLInputElement;
+    timeoutSlider.type = 'range';
+    timeoutSlider.min = '60';
+    timeoutSlider.max = '1800';
+    timeoutSlider.step = '30';
+    timeoutSlider.value = String(safetySettings.wall_clock_timeout_seconds);
+    timeoutSlider.style.cssText = 'width: 100%; accent-color: #ec4899;';
+
+    timeoutSlider.addEventListener('input', () => {
+      const valueEl = timeoutCard.querySelector('#timeout-value');
+      if (valueEl) valueEl.textContent = formatTime(parseInt(timeoutSlider.value));
+    });
+
+    timeoutSlider.addEventListener('change', async () => {
+      try {
+        await kernelRequest('safety/set_wall_clock_timeout', {
+          timeout_seconds: parseInt(timeoutSlider.value),
+        });
+        safetySettings!.wall_clock_timeout_seconds = parseInt(timeoutSlider.value);
+      } catch (e) {
+        console.error('Failed to update wall clock timeout:', e);
+      }
+    });
+
+    timeoutCard.appendChild(timeoutSlider);
+    agentGrid.appendChild(timeoutCard);
+
+    agentSection.appendChild(agentGrid);
+    content.appendChild(agentSection);
 
     // ============ Pattern Detection (Read-only) ============
     const patternsSection = createSection('Blocked Patterns (Read-only)');

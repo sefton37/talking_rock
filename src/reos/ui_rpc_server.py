@@ -3888,6 +3888,7 @@ def _handle_cairn_thunderbird_status(_db: Database) -> dict[str, Any]:
 def _handle_safety_settings(_db: Database) -> dict[str, Any]:
     """Get current safety settings and limits."""
     from . import linux_tools
+    from .code_mode import executor as code_executor
 
     rate_limiter = get_rate_limiter()
     sudo_count, sudo_max = linux_tools.get_sudo_escalation_status()
@@ -3906,6 +3907,8 @@ def _handle_safety_settings(_db: Database) -> dict[str, Any]:
         "max_sudo_escalations": sudo_max,
         "current_sudo_count": sudo_count,
         "max_command_length": MAX_COMMAND_LEN,
+        "max_iterations": code_executor.ExecutionState.max_iterations,
+        "wall_clock_timeout_seconds": code_executor.DEFAULT_WALL_CLOCK_TIMEOUT_SECONDS,
         "max_service_name_length": MAX_SERVICE_NAME_LEN,
         "max_container_id_length": MAX_CONTAINER_ID_LEN,
         "max_package_name_length": MAX_PACKAGE_NAME_LEN,
@@ -3987,6 +3990,52 @@ def _handle_safety_set_command_length(
     return {
         "success": True,
         "max_length": max_length,
+    }
+
+
+def _handle_safety_set_max_iterations(
+    _db: Database,
+    *,
+    max_iterations: int,
+) -> dict[str, Any]:
+    """Update the maximum iterations for agent execution."""
+    from .code_mode import executor as code_executor
+
+    # Validate bounds (3-100)
+    if max_iterations < 3:
+        max_iterations = 3
+    if max_iterations > 100:
+        max_iterations = 100
+
+    # Update the dataclass default
+    code_executor.ExecutionState.max_iterations = max_iterations
+
+    return {
+        "success": True,
+        "max_iterations": max_iterations,
+    }
+
+
+def _handle_safety_set_wall_clock_timeout(
+    _db: Database,
+    *,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    """Update the wall-clock timeout for agent execution."""
+    from .code_mode import executor as code_executor
+
+    # Validate bounds (60s - 3600s / 1 hour max)
+    if timeout_seconds < 60:
+        timeout_seconds = 60
+    if timeout_seconds > 3600:
+        timeout_seconds = 3600
+
+    # Update the module-level constant
+    code_executor.DEFAULT_WALL_CLOCK_TIMEOUT_SECONDS = timeout_seconds
+
+    return {
+        "success": True,
+        "timeout_seconds": timeout_seconds,
     }
 
 
@@ -5704,6 +5753,28 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
             return _jsonrpc_result(
                 req_id=req_id,
                 result=_handle_safety_set_command_length(db, max_length=max_length),
+            )
+
+        if method == "safety/set_max_iterations":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            max_iterations = params.get("max_iterations")
+            if not isinstance(max_iterations, int):
+                raise RpcError(code=-32602, message="max_iterations must be an integer")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_safety_set_max_iterations(db, max_iterations=max_iterations),
+            )
+
+        if method == "safety/set_wall_clock_timeout":
+            if not isinstance(params, dict):
+                raise RpcError(code=-32602, message="params must be an object")
+            timeout_seconds = params.get("timeout_seconds")
+            if not isinstance(timeout_seconds, int):
+                raise RpcError(code=-32602, message="timeout_seconds must be an integer")
+            return _jsonrpc_result(
+                req_id=req_id,
+                result=_handle_safety_set_wall_clock_timeout(db, timeout_seconds=timeout_seconds),
             )
 
         # -------------------------------------------------------------------------
