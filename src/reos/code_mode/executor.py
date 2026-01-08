@@ -631,7 +631,7 @@ class CodeExecutor:
                     step_num=step_idx,
                     total_steps=len(contract.steps),
                     description=next_step.description,
-                    step_type=next_step.criterion.type.value if next_step.criterion else None,
+                    step_type=next_step.action,
                     target_path=next_step.target_file,
                 )
                 step_result = self._execute_step(next_step, state.intent, act, state)

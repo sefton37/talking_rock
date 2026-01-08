@@ -190,6 +190,98 @@ class TestCodeExecutor:
         for iteration in result.state.iterations:
             assert iteration.started_at is not None
 
+    def test_step_execution_with_session_logging(self, temp_git_repo: Path) -> None:
+        """Exercise full step execution path including session logging.
+
+        This test catches attribute errors in the step execution path (like
+        accessing non-existent attributes on ContractStep) by running through
+        the complete execution loop with session logging enabled.
+
+        DEBUG STRATEGY: If this test fails, check:
+        1. Does contract have steps? (decomposition working)
+        2. Were steps attempted? (execution loop running)
+        3. What was the error message? (captured in result)
+        """
+        sandbox = CodeSandbox(temp_git_repo)
+        executor = CodeExecutor(sandbox, llm=None)
+        act = Act(
+            act_id="test",
+            title="Test",
+            active=True,
+            repo_path=str(temp_git_repo),
+        )
+
+        # Use "add" action verb - this triggers create_file action in heuristic decomposition
+        # Avoid game/web keywords which trigger edit_file steps in criteria generation
+        result = executor.execute(
+            "add a calculator module",  # Simple verb + target = create_file step
+            act,
+            max_iterations=2,
+        )
+
+        # Diagnostic info for debugging test failures
+        intent = result.state.intent
+        all_contracts = result.state.contracts
+        all_steps = []
+        for c in all_contracts:
+            all_steps.extend(c.steps)
+
+        diag_info = {
+            "status": result.state.status.value,
+            "message": result.message[:200] if result.message else None,
+            "iterations": result.state.current_iteration,
+            "num_contracts": len(all_contracts),
+            "total_steps": len(all_steps),
+            "step_statuses": [s.status for s in all_steps],
+            "step_actions": [s.action for s in all_steps],
+            # Intent debugging
+            "action_verb": intent.prompt_intent.action_verb if intent else None,
+            "target": intent.prompt_intent.target if intent else None,
+        }
+
+        # Must have at least one contract with steps
+        assert len(all_contracts) > 0, f"No contracts built. Diag: {diag_info}"
+        assert len(all_steps) > 0, f"No steps in any contract. Diag: {diag_info}"
+
+        # Check for steps that were at least started (across ALL contracts)
+        # "completed" or "failed" means step execution was attempted
+        # "pending" means step was never attempted
+        attempted_steps = [s for s in all_steps if s.status != "pending"]
+
+        # More detailed diagnostic message
+        if len(attempted_steps) == 0:
+            # Show step details to help debug why nothing was attempted
+            step_details = [
+                f"Step {i}: status={s.status}, action={s.action}, target={s.target_file}"
+                for i, s in enumerate(all_steps)
+            ]
+            diag_info["step_details"] = step_details
+
+        # At least one step should have been attempted across all contracts
+        # This exercises the session logging code path
+        assert len(attempted_steps) > 0, (
+            f"No steps were attempted - session logging path not tested.\n"
+            f"Diagnostic info: {diag_info}"
+        )
+
+        # Verify step attributes that session logging code uses
+        # This catches typos like `step.criterion` instead of `step.action`
+        for step in all_steps:
+            # These are the attributes log_step_start needs - catch typos early
+            assert hasattr(step, "action"), "ContractStep missing 'action' attribute"
+            assert hasattr(step, "target_file"), "ContractStep missing 'target_file' attribute"
+            assert hasattr(step, "description"), "ContractStep missing 'description' attribute"
+            assert hasattr(step, "id"), "ContractStep missing 'id' attribute"
+            # Verify action is a valid string (not None, not a method)
+            assert step.action in ("create_file", "edit_file", "run_command"), (
+                f"Invalid step action: {step.action!r} for step {step.description}"
+            )
+            # These attributes should NOT exist (catch accidental usage)
+            assert not hasattr(step, "criterion"), (
+                "ContractStep should not have 'criterion' attribute. "
+                "Use 'target_criteria' (list of IDs) instead."
+            )
+
 
 class TestExecutionState:
     """Tests for execution state management."""
