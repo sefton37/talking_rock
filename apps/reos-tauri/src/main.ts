@@ -342,13 +342,13 @@ function buildUi() {
     kernelRequest,
   });
 
-  // Handle CAIRN chat messages (conversational only - no code mode)
+  // Handle CAIRN chat messages (default conversational mode)
   async function handleCairnMessage(message: string): Promise<void> {
     try {
       const result = await kernelRequest<ChatRespondResult>('chat/respond', {
         text: message,
         conversation_id: currentConversationId,
-        skip_code_mode: true,  // CAIRN is conversational, never trigger code mode
+        // No use_code_mode flag - CAIRN is the default conversational agent
       });
       if (result.conversation_id) {
         currentConversationId = result.conversation_id;

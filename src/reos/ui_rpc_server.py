@@ -209,9 +209,9 @@ def _handle_chat_respond(
     *,
     text: str,
     conversation_id: str | None = None,
-    skip_code_mode: bool = False,
+    use_code_mode: bool = False,
 ) -> dict[str, Any]:
-    agent = ChatAgent(db=db, skip_code_mode=skip_code_mode)
+    agent = ChatAgent(db=db, use_code_mode=use_code_mode)
 
     # Check for conversational intents (Phase 6)
     if conversation_id:
@@ -4173,12 +4173,12 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
                 raise RpcError(code=-32602, message="params must be an object")
             text = params.get("text")
             conversation_id = params.get("conversation_id")
-            skip_code_mode = params.get("skip_code_mode", False)
+            use_code_mode = params.get("use_code_mode", False)  # Default is conversational (CAIRN)
             if not isinstance(text, str) or not text.strip():
                 raise RpcError(code=-32602, message="text is required")
             if conversation_id is not None and not isinstance(conversation_id, str):
                 raise RpcError(code=-32602, message="conversation_id must be a string or null")
-            result = _handle_chat_respond(db, text=text, conversation_id=conversation_id, skip_code_mode=skip_code_mode)
+            result = _handle_chat_respond(db, text=text, conversation_id=conversation_id, use_code_mode=use_code_mode)
             return _jsonrpc_result(req_id=req_id, result=result)
 
         if method == "intent/detect":
