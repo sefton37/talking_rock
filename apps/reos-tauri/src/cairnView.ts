@@ -213,6 +213,46 @@ export function createCairnView(
   `;
   chatMessages.appendChild(welcomeMsg);
 
+  // Thunderbird integration prompt (shown if not connected)
+  const thunderbirdPrompt = el('div');
+  thunderbirdPrompt.style.cssText = `
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 12px;
+    padding: 16px;
+    color: rgba(255,255,255,0.9);
+    display: none;
+  `;
+  thunderbirdPrompt.innerHTML = `
+    <div style="display: flex; align-items: flex-start; gap: 12px;">
+      <span style="font-size: 24px;">📧</span>
+      <div style="flex: 1;">
+        <div style="font-weight: 600; margin-bottom: 6px; color: #f59e0b;">Connect Thunderbird?</div>
+        <div style="font-size: 13px; line-height: 1.5; color: rgba(255,255,255,0.7); margin-bottom: 12px;">
+          CAIRN can integrate with Thunderbird to help manage your calendar events and contacts.
+          This enables time-aware surfacing and contact-linked knowledge items.
+        </div>
+        <div style="font-size: 12px; color: rgba(255,255,255,0.5);">
+          Install <a href="https://www.thunderbird.net" target="_blank" style="color: #60a5fa;">Thunderbird</a> and create a profile to enable this feature.
+        </div>
+      </div>
+    </div>
+  `;
+  chatMessages.appendChild(thunderbirdPrompt);
+
+  // Check Thunderbird status on load
+  void (async () => {
+    try {
+      const status = await callbacks.kernelRequest<{ available: boolean; message?: string }>('cairn/thunderbird/status', {});
+      if (!status.available) {
+        thunderbirdPrompt.style.display = 'block';
+      }
+    } catch (e) {
+      // Silently ignore - Thunderbird check is optional
+      console.log('Thunderbird status check failed:', e);
+    }
+  })();
+
   // Chat input area
   const inputArea = el('div');
   inputArea.style.cssText = `

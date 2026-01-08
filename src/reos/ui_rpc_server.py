@@ -3849,6 +3849,31 @@ def _handle_chat_clear(
 
 
 # -------------------------------------------------------------------------
+# CAIRN (Attention Minder)
+# -------------------------------------------------------------------------
+
+def _handle_cairn_thunderbird_status(_db: Database) -> dict[str, Any]:
+    """Check if Thunderbird integration is available."""
+    from .cairn.thunderbird import ThunderbirdBridge
+
+    bridge = ThunderbirdBridge.auto_detect()
+    if bridge is None:
+        return {
+            "available": False,
+            "message": "Thunderbird profile not detected. Install Thunderbird and create a profile to enable calendar and contact integration.",
+        }
+
+    status = bridge.get_status()
+    return {
+        "available": True,
+        "profile_path": str(bridge.config.profile_path),
+        "has_contacts": status.get("contacts_available", False),
+        "has_calendar": status.get("calendar_available", False),
+        "contact_count": status.get("contact_count", 0),
+    }
+
+
+# -------------------------------------------------------------------------
 # Handoff System (Talking Rock Multi-Agent)
 # -------------------------------------------------------------------------
 
@@ -5504,6 +5529,13 @@ def _handle_jsonrpc_request(db: Database, req: dict[str, Any]) -> dict[str, Any]
                     conversation_id=conversation_id,
                 ),
             )
+
+        # -------------------------------------------------------------------------
+        # CAIRN (Attention Minder)
+        # -------------------------------------------------------------------------
+
+        if method == "cairn/thunderbird/status":
+            return _jsonrpc_result(req_id=req_id, result=_handle_cairn_thunderbird_status(db))
 
         # -------------------------------------------------------------------------
         # Handoff System (Talking Rock Multi-Agent)
