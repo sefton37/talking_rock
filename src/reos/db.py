@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Generator
 
 from .settings import settings
 
@@ -38,8 +40,39 @@ class Database:
             check_same_thread=False,
         )
         conn.row_factory = sqlite3.Row
+
+        # SQLite safety PRAGMAs - enforce data integrity
+        conn.execute("PRAGMA foreign_keys = ON")  # Enforce FK constraints
+        conn.execute("PRAGMA journal_mode = WAL")  # Write-ahead logging for concurrency
+        conn.execute("PRAGMA busy_timeout = 5000")  # 5s wait on lock contention
+
         self._local.conn = conn
         return conn
+
+    @contextmanager
+    def transaction(self) -> Generator[sqlite3.Connection, None, None]:
+        """Execute operations within an explicit transaction.
+
+        Commits on success, rolls back on any exception.
+
+        Usage:
+            with db.transaction() as conn:
+                conn.execute("INSERT INTO ...")
+                conn.execute("UPDATE ...")
+            # Committed automatically on exit
+
+            with db.transaction() as conn:
+                conn.execute("INSERT INTO ...")
+                raise ValueError("oops")
+            # Rolled back automatically
+        """
+        conn = self.connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     def close(self) -> None:
         """Close the database connection."""
@@ -426,6 +459,25 @@ class Database:
         )
 
         conn.commit()
+
+        # Run any pending schema migrations
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        """Run pending schema migrations."""
+        from .migrations import run_migrations
+
+        try:
+            count = run_migrations(self)
+            if count > 0:
+                import logging
+
+                logging.getLogger(__name__).info(f"Applied {count} migration(s)")
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).error(f"Migration failed: {e}")
+            raise
 
     def set_active_persona_id(self, *, persona_id: str | None) -> None:
         """Set the active agent persona id."""
