@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -248,7 +247,10 @@ class SystemIndexer:
         pkg_embed_count = self.index_embeddings(snapshot.packages)
         app_embed_count = self.index_desktop_embeddings()
         if pkg_embed_count or app_embed_count:
-            logger.info("Embeddings created: %d packages, %d desktop apps", pkg_embed_count, app_embed_count)
+            logger.info(
+                "Embeddings created: %d packages, %d desktop apps",
+                pkg_embed_count, app_embed_count
+            )
         else:
             logger.info("Embeddings skipped (sentence-transformers not installed)")
 
@@ -564,7 +566,8 @@ class SystemIndexer:
             # Insert all packages
             for name, description in with_desc:
                 conn.execute(
-                    "INSERT INTO packages_fts (name, description, is_installed, category) VALUES (?, ?, ?, ?)",
+                    """INSERT INTO packages_fts
+                    (name, description, is_installed, category) VALUES (?, ?, ?, ?)""",
                     (name, description, "yes", ""),
                 )
 
@@ -689,7 +692,8 @@ class SystemIndexer:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO desktop_apps
-                    (desktop_id, name, generic_name, comment, exec_cmd, icon, categories, keywords, indexed_at)
+                    (desktop_id, name, generic_name, comment, exec_cmd,
+                     icon, categories, keywords, indexed_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -865,7 +869,6 @@ class SystemIndexer:
             # Process in batches for memory efficiency
             for i in range(0, len(items_to_embed), batch_size):
                 batch = items_to_embed[i:i + batch_size]
-                names = [name for name, _ in batch]
                 texts = [f"{name}: {desc}" for name, desc in batch]
 
                 # Generate embeddings for batch
@@ -1194,7 +1197,9 @@ class SystemIndexer:
             failed = linux_tools.get_failed_services()
             for svc in failed[:5]:
                 if isinstance(svc, dict):
-                    logs.append(f"[failed] {svc.get('name', 'unknown')}: {svc.get('description', '')}")
+                    name = svc.get('name', 'unknown')
+                    desc = svc.get('description', '')
+                    logs.append(f"[failed] {name}: {desc}")
         except Exception as e:
             logger.debug("Could not get failed services: %s", e)
 

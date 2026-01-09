@@ -14,7 +14,6 @@ The context layer:
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -106,7 +105,9 @@ class ShellContext:
                     lines.append(f"  Description: {self.package_description}")
             elif self.fts_matches:
                 # Show FTS5 search results when exact match not found
-                lines.append(f"- {self.intent_target}: NOT FOUND directly, but similar programs found:")
+                lines.append(
+                    f"- {self.intent_target}: NOT FOUND directly, but similar programs found:"
+                )
                 for match in self.fts_matches[:3]:  # Top 3 matches
                     name = match.get("name", match.get("desktop_id", "unknown"))
                     desc = match.get("description", match.get("comment", ""))
@@ -194,7 +195,7 @@ class ShellContextGatherer:
                     break
 
                 # Also check if pattern appears anywhere (for "can you run X")
-                for i, word in enumerate(words):
+                for i, _word in enumerate(words):
                     if words[i:i + pattern_len] == pattern_words:
                         intent_verb = verb_type
                         target_start_idx = i + pattern_len
