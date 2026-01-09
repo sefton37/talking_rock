@@ -18,5 +18,7 @@ Handler modules are imported in router.register_handlers() to populate the regis
 from __future__ import annotations
 
 # Import all handler modules to register them
+from reos.rpc.handlers import approvals  # noqa: F401
 from reos.rpc.handlers import auth  # noqa: F401
+from reos.rpc.handlers import conversations  # noqa: F401
 from reos.rpc.handlers import tools  # noqa: F401
