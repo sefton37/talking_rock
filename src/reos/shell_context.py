@@ -459,10 +459,13 @@ class ShellContextGatherer:
         return False, None, False
 
     def search_fts5(self, query: str, limit: int = 5) -> list[dict[str, str]]:
-        """Search packages and desktop apps using FTS5 full-text search.
+        """Search packages and desktop apps using hybrid search.
+
+        Uses FTS5 for fast keyword matching, with semantic vector
+        similarity as fallback for synonym matching.
 
         Args:
-            query: Search query (e.g., "image editor", "web browser")
+            query: Search query (e.g., "image editor", "picture editor")
             limit: Maximum results to return
 
         Returns:
@@ -478,27 +481,17 @@ class ShellContextGatherer:
             db = get_db()
             indexer = SystemIndexer(db)
 
-            # Search both packages and desktop apps
-            results = indexer.search_all(query, limit=limit)
+            # Use hybrid search (FTS5 first, semantic fallback)
+            results = indexer.search_hybrid(query, limit=limit)
 
-            # Combine and return top matches
+            # Convert to expected format
             combined: list[dict[str, str]] = []
-
-            # Add package matches
-            for pkg in results.get("packages", []):
+            for item in results:
                 combined.append({
-                    "name": pkg["name"],
-                    "description": pkg.get("description", ""),
-                    "type": "package",
-                })
-
-            # Add desktop app matches
-            for app in results.get("desktop_apps", []):
-                combined.append({
-                    "name": app["name"],
-                    "description": app.get("comment", app.get("generic_name", "")),
-                    "type": "desktop_app",
-                    "exec_cmd": app.get("exec_cmd", ""),
+                    "name": item["name"],
+                    "description": item.get("description", ""),
+                    "type": item.get("source", "package"),
+                    "match_type": item.get("match_type", "keyword"),
                 })
 
             return combined[:limit]

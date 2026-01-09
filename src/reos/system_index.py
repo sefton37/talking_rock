@@ -124,6 +124,24 @@ class SystemIndexer:
             """
         )
 
+        # Vector embeddings table for semantic search
+        # Stores pre-computed embeddings for packages and apps
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS semantic_embeddings (
+                id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                embedding BLOB NOT NULL,
+                indexed_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_embeddings_source ON semantic_embeddings(source_type)"
+        )
+
         conn.commit()
 
     def needs_refresh(self) -> bool:
@@ -224,6 +242,15 @@ class SystemIndexer:
         pkg_count = self.index_packages_fts(snapshot.packages)
         app_count = self.index_desktop_apps()
         logger.info("FTS5 indexed: %d packages, %d desktop apps", pkg_count, app_count)
+
+        # Create vector embeddings for semantic search (if available)
+        logger.info("Creating vector embeddings for semantic search...")
+        pkg_embed_count = self.index_embeddings(snapshot.packages)
+        app_embed_count = self.index_desktop_embeddings()
+        if pkg_embed_count or app_embed_count:
+            logger.info("Embeddings created: %d packages, %d desktop apps", pkg_embed_count, app_embed_count)
+        else:
+            logger.info("Embeddings skipped (sentence-transformers not installed)")
 
         logger.info("System snapshot captured: %s", snapshot_id)
         return snapshot
@@ -769,6 +796,310 @@ class SystemIndexer:
             "packages": self.search_packages(query, limit),
             "desktop_apps": self.search_desktop_apps(query, limit),
         }
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # Semantic Search with Vector Embeddings
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    _embedding_model = None  # Lazy-loaded singleton
+
+    @classmethod
+    def _get_embedding_model(cls):
+        """Lazy-load the sentence transformer model.
+
+        Uses all-MiniLM-L6-v2 (22MB) for fast, lightweight embeddings.
+        Returns None if sentence-transformers not installed.
+        """
+        if cls._embedding_model is not None:
+            return cls._embedding_model
+
+        try:
+            from sentence_transformers import SentenceTransformer
+            logger.info("Loading embedding model (all-MiniLM-L6-v2)...")
+            cls._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            logger.info("Embedding model loaded")
+            return cls._embedding_model
+        except ImportError:
+            logger.debug("sentence-transformers not installed, semantic search unavailable")
+            return None
+        except Exception as e:
+            logger.warning("Failed to load embedding model: %s", e)
+            return None
+
+    def index_embeddings(self, packages_info: dict[str, Any], batch_size: int = 100) -> int:
+        """Create vector embeddings for packages.
+
+        Args:
+            packages_info: Output from _get_packages() with descriptions
+            batch_size: Number of items to embed at once
+
+        Returns:
+            Number of embeddings created
+        """
+        model = self._get_embedding_model()
+        if model is None:
+            logger.info("Skipping embeddings - model not available")
+            return 0
+
+        with_desc = packages_info.get("with_descriptions", [])
+        if not with_desc:
+            return 0
+
+        # Filter to packages with meaningful descriptions
+        items_to_embed = [
+            (name, desc) for name, desc in with_desc
+            if desc and len(desc) > 10  # Skip empty/trivial descriptions
+        ]
+
+        if not items_to_embed:
+            return 0
+
+        conn = self._db.connect()
+        now = datetime.now(UTC).isoformat()
+        count = 0
+
+        try:
+            # Clear existing package embeddings
+            conn.execute("DELETE FROM semantic_embeddings WHERE source_type = 'package'")
+
+            # Process in batches for memory efficiency
+            for i in range(0, len(items_to_embed), batch_size):
+                batch = items_to_embed[i:i + batch_size]
+                names = [name for name, _ in batch]
+                texts = [f"{name}: {desc}" for name, desc in batch]
+
+                # Generate embeddings for batch
+                embeddings = model.encode(texts, show_progress_bar=False)
+
+                # Store each embedding
+                for j, (name, desc) in enumerate(batch):
+                    embedding_bytes = embeddings[j].tobytes()
+                    conn.execute(
+                        """
+                        INSERT INTO semantic_embeddings
+                        (id, source_type, name, description, embedding, indexed_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (f"pkg:{name}", "package", name, desc, embedding_bytes, now),
+                    )
+                    count += 1
+
+                # Commit each batch
+                conn.commit()
+                logger.debug("Embedded batch %d-%d", i, min(i + batch_size, len(items_to_embed)))
+
+            logger.info("Created %d package embeddings", count)
+            return count
+
+        except Exception as e:
+            logger.error("Failed to create embeddings: %s", e)
+            conn.rollback()
+            return 0
+
+    def index_desktop_embeddings(self) -> int:
+        """Create vector embeddings for desktop applications.
+
+        Returns:
+            Number of embeddings created
+        """
+        model = self._get_embedding_model()
+        if model is None:
+            return 0
+
+        conn = self._db.connect()
+        now = datetime.now(UTC).isoformat()
+
+        try:
+            # Get all desktop apps
+            rows = conn.execute(
+                "SELECT desktop_id, name, generic_name, comment FROM desktop_apps"
+            ).fetchall()
+
+            if not rows:
+                return 0
+
+            # Clear existing desktop embeddings
+            conn.execute("DELETE FROM semantic_embeddings WHERE source_type = 'desktop'")
+
+            # Build texts for embedding
+            items = []
+            for row in rows:
+                desc = row["comment"] or row["generic_name"] or ""
+                if desc:
+                    items.append((row["desktop_id"], row["name"], desc))
+
+            if not items:
+                return 0
+
+            texts = [f"{name}: {desc}" for _, name, desc in items]
+            embeddings = model.encode(texts, show_progress_bar=False)
+
+            for i, (desktop_id, name, desc) in enumerate(items):
+                embedding_bytes = embeddings[i].tobytes()
+                conn.execute(
+                    """
+                    INSERT INTO semantic_embeddings
+                    (id, source_type, name, description, embedding, indexed_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (f"desktop:{desktop_id}", "desktop", name, desc, embedding_bytes, now),
+                )
+
+            conn.commit()
+            logger.info("Created %d desktop app embeddings", len(items))
+            return len(items)
+
+        except Exception as e:
+            logger.error("Failed to create desktop embeddings: %s", e)
+            conn.rollback()
+            return 0
+
+    def search_semantic(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Search using vector similarity (cosine distance).
+
+        This is the fallback when FTS5 returns no results.
+        Handles synonyms and semantic matching.
+
+        Args:
+            query: Natural language query
+            limit: Maximum results to return
+
+        Returns:
+            List of matching items with similarity scores
+        """
+        model = self._get_embedding_model()
+        if model is None:
+            return []
+
+        try:
+            import numpy as np
+
+            # Embed the query
+            query_embedding = model.encode(query, show_progress_bar=False)
+
+            # Get all embeddings from database
+            conn = self._db.connect()
+            rows = conn.execute(
+                "SELECT id, source_type, name, description, embedding FROM semantic_embeddings"
+            ).fetchall()
+
+            if not rows:
+                return []
+
+            # Calculate cosine similarities
+            results = []
+            for row in rows:
+                stored_embedding = np.frombuffer(row["embedding"], dtype=np.float32)
+
+                # Cosine similarity
+                similarity = np.dot(query_embedding, stored_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(stored_embedding)
+                )
+
+                results.append({
+                    "id": row["id"],
+                    "source_type": row["source_type"],
+                    "name": row["name"],
+                    "description": row["description"],
+                    "similarity": float(similarity),
+                })
+
+            # Sort by similarity (highest first) and return top results
+            results.sort(key=lambda x: x["similarity"], reverse=True)
+            return results[:limit]
+
+        except Exception as e:
+            logger.debug("Semantic search failed: %s", e)
+            return []
+
+    def search_hybrid(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+        """Hybrid search: FTS5 first, semantic fallback.
+
+        Uses fast FTS5 for keyword matches, falls back to
+        vector similarity for semantic matching when FTS5 fails
+        or returns weak results.
+
+        Args:
+            query: Search query
+            limit: Maximum results
+
+        Returns:
+            Combined results from both search methods
+        """
+        combined = []
+
+        # Try FTS5 first (fast)
+        fts_results = self.search_all(query, limit)
+
+        # Check if FTS5 results are high quality (name matches query words)
+        query_words = set(query.lower().split())
+        high_quality_fts = []
+
+        for pkg in fts_results.get("packages", []):
+            name_lower = pkg["name"].lower()
+            # High quality if name contains any query word
+            if any(word in name_lower for word in query_words):
+                high_quality_fts.append({
+                    "name": pkg["name"],
+                    "description": pkg.get("description", ""),
+                    "source": "package",
+                    "match_type": "keyword",
+                })
+
+        for app in fts_results.get("desktop_apps", []):
+            name_lower = app["name"].lower()
+            if any(word in name_lower for word in query_words):
+                high_quality_fts.append({
+                    "name": app["name"],
+                    "description": app.get("comment", app.get("generic_name", "")),
+                    "source": "desktop",
+                    "match_type": "keyword",
+                })
+
+        combined.extend(high_quality_fts)
+
+        # Always try semantic search for synonym matching
+        semantic_results = self.search_semantic(query, limit)
+
+        # Add high-confidence semantic results (similarity > 0.5)
+        for item in semantic_results:
+            similarity = item.get("similarity", 0)
+            if similarity > 0.5:  # Only high-confidence semantic matches
+                # Avoid duplicates
+                if not any(r["name"] == item["name"] for r in combined):
+                    combined.append({
+                        "name": item["name"],
+                        "description": item.get("description", ""),
+                        "source": item["source_type"],
+                        "match_type": "semantic",
+                        "similarity": similarity,
+                    })
+
+        # If still not enough results, add lower-quality FTS5 matches
+        if len(combined) < limit:
+            for pkg in fts_results.get("packages", []):
+                if not any(r["name"] == pkg["name"] for r in combined):
+                    combined.append({
+                        "name": pkg["name"],
+                        "description": pkg.get("description", ""),
+                        "source": "package",
+                        "match_type": "keyword",
+                    })
+                    if len(combined) >= limit:
+                        break
+
+            for app in fts_results.get("desktop_apps", []):
+                if not any(r["name"] == app["name"] for r in combined):
+                    combined.append({
+                        "name": app["name"],
+                        "description": app.get("comment", app.get("generic_name", "")),
+                        "source": "desktop",
+                        "match_type": "keyword",
+                    })
+                    if len(combined) >= limit:
+                        break
+
+        return combined[:limit]
 
     def _get_containers(self) -> dict[str, Any]:
         """Get container runtime, ALL containers, and ALL images."""
