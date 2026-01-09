@@ -11,6 +11,8 @@ from .settings import settings
 class Database:
     """Local SQLite database for ReOS events, sessions, and classifications."""
 
+    db_path: Path | str  # Can be Path or ":memory:" string
+
     def __init__(self, db_path: Path | str | None = None) -> None:
         if db_path == ":memory:":
             self.db_path = ":memory:"
@@ -24,11 +26,11 @@ class Database:
 
     def connect(self) -> sqlite3.Connection:
         """Open or return an existing connection."""
-        conn = getattr(self._local, "conn", None)
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
         if conn is not None:
             return conn
         # Handle :memory: databases specially
-        if self.db_path != ":memory:":
+        if isinstance(self.db_path, Path):
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(
             str(self.db_path),
@@ -513,7 +515,8 @@ class Database:
         if row is None:
             return None
         if isinstance(row, sqlite3.Row):
-            return row["value"]
+            value = row["value"]
+            return str(value) if value is not None else None
         return str(row[0]) if row[0] is not None else None
 
     def upsert_repo(self, *, repo_id: str, path: str, remote_summary: str | None = None) -> None:

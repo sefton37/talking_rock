@@ -274,6 +274,56 @@ def get_sudo_escalation_status() -> tuple[int, int]:
     return _sudo_escalation_count, _MAX_SUDO_ESCALATIONS
 
 
+def _make_command_noninteractive(command: str) -> str:
+    """Add non-interactive flags to package manager commands.
+
+    This prevents commands from hanging waiting for user input when run
+    via subprocess with captured stdin.
+
+    Args:
+        command: The command to modify
+
+    Returns:
+        Modified command with appropriate flags added
+    """
+    import re
+
+    cmd = command.strip()
+
+    # apt/apt-get install/remove/upgrade without -y
+    # Match: sudo apt install pkg, apt-get upgrade, etc.
+    if re.search(r'(sudo\s+)?(apt(?:-get)?)\s+(install|remove|purge|upgrade|dist-upgrade|autoremove)', cmd):
+        if ' -y' not in cmd and ' --yes' not in cmd:
+            # Insert -y after the action word
+            cmd = re.sub(
+                r'((sudo\s+)?(apt(?:-get)?)\s+(install|remove|purge|upgrade|dist-upgrade|autoremove))',
+                r'\1 -y',
+                cmd,
+                count=1
+            )
+
+    # dnf/yum install/remove/upgrade without -y
+    if re.search(r'(sudo\s+)?(dnf|yum)\s+(install|remove|erase|upgrade|update)', cmd):
+        if ' -y' not in cmd and ' --assumeyes' not in cmd:
+            cmd = re.sub(
+                r'((sudo\s+)?(dnf|yum)\s+(install|remove|erase|upgrade|update))',
+                r'\1 -y',
+                cmd,
+                count=1
+            )
+
+    # pacman without --noconfirm
+    if re.search(r'(sudo\s+)?pacman\s+-S', cmd) and '--noconfirm' not in cmd:
+        cmd = re.sub(r'(pacman\s+-S)', r'\1 --noconfirm', cmd, count=1)
+
+    # zypper without -y or -n
+    if re.search(r'(sudo\s+)?zypper\s+(install|remove|update)', cmd):
+        if ' -y' not in cmd and ' -n' not in cmd and ' --non-interactive' not in cmd:
+            cmd = re.sub(r'(zypper)\s+(install|remove|update)', r'\1 -n \2', cmd, count=1)
+
+    return cmd
+
+
 def execute_command(
     command: str,
     *,
@@ -281,6 +331,7 @@ def execute_command(
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     rate_limit_category: str | None = None,
+    interactive: bool = False,
 ) -> CommandResult:
     """Execute a shell command safely.
 
@@ -290,6 +341,8 @@ def execute_command(
         cwd: Working directory
         env: Environment variables to add
         rate_limit_category: Optional category for rate limiting (e.g., "sudo", "service")
+        interactive: If True, run with stdin/stdout/stderr connected to terminal
+                    (allows user input but output won't be captured)
 
     Returns:
         CommandResult with output and status
@@ -336,28 +389,85 @@ def execute_command(
             success=False,
         )
 
+    # Check if we're running in terminal mode (from shell_cli)
+    # In terminal mode, commands run with full terminal access so users can interact
+    terminal_mode = os.environ.get("REOS_TERMINAL_MODE") == "1"
+
+    # Only add -y flags if NOT in terminal mode (GUI/API context)
+    # In terminal mode, let the user respond to prompts naturally
+    if not terminal_mode:
+        command = _make_command_noninteractive(command)
+
     # Prepare environment
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
 
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd,
-            env=run_env,
-        )
-        return CommandResult(
-            command=command,
-            returncode=result.returncode,
-            stdout=result.stdout[:10000] if result.stdout else "",  # Limit output
-            stderr=result.stderr[:5000] if result.stderr else "",
-            success=result.returncode == 0,
-        )
+        if interactive or terminal_mode:
+            # Terminal mode: use os.system() for full terminal pass-through
+            # This is the most reliable way to run interactive commands because
+            # it runs the command directly in a shell with full terminal inheritance.
+            # subprocess.run() can have issues with stdin even when explicitly passed.
+            #
+            # Note: os.system() doesn't support timeout, but interactive commands
+            # need user input anyway, so timeout doesn't make sense here.
+
+            # Save current directory, change if needed
+            old_cwd = None
+            if cwd:
+                old_cwd = os.getcwd()
+                os.chdir(cwd)
+
+            # Set environment variables
+            old_env: dict[str, str | None] = {}
+            for key, value in (env or {}).items():
+                old_env[key] = os.environ.get(key)
+                os.environ[key] = value
+
+            try:
+                # os.system() runs with full terminal access - stdin, stdout, stderr
+                # all connected to the terminal. Interactive prompts work naturally.
+                returncode = os.system(command)
+                # os.system returns the wait status, need to extract exit code
+                if os.name == 'posix':
+                    returncode = os.waitstatus_to_exitcode(returncode) if hasattr(os, 'waitstatus_to_exitcode') else returncode >> 8
+            finally:
+                # Restore environment
+                for key, old_value in old_env.items():
+                    if old_value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = old_value
+                # Restore directory
+                if old_cwd:
+                    os.chdir(old_cwd)
+
+            return CommandResult(
+                command=command,
+                returncode=returncode,
+                stdout="(command executed in terminal)",
+                stderr="",
+                success=returncode == 0,
+            )
+        else:
+            # Non-interactive mode (GUI/API): capture output
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+                env=run_env,
+            )
+            return CommandResult(
+                command=command,
+                returncode=result.returncode,
+                stdout=result.stdout[:10000] if result.stdout else "",  # Limit output
+                stderr=result.stderr[:5000] if result.stderr else "",
+                success=result.returncode == 0,
+            )
     except subprocess.TimeoutExpired:
         return CommandResult(
             command=command,
@@ -838,7 +948,7 @@ def manage_service(service_name: str, action: str) -> CommandResult:
 
 def search_packages(query: str, limit: int = 20) -> list[dict[str, str]]:
     """Search for packages using the system's package manager."""
-    packages = []
+    packages: list[dict[str, str]] = []
     pm = detect_package_manager()
 
     if not pm:
@@ -1031,7 +1141,7 @@ def remove_package(package_name: str, confirm: bool = False, purge: bool = False
 
 def list_installed_packages(search: str | None = None) -> list[str]:
     """List installed packages, optionally filtered by search term."""
-    packages = []
+    packages: list[str] = []
     pm = detect_package_manager()
 
     if not pm:
@@ -1126,7 +1236,7 @@ def list_directory(
             if not show_hidden and entry.name.startswith("."):
                 continue
 
-            info: dict[str, Any] = {
+            entry_info: DirectoryEntry = {
                 "name": entry.name,
                 "type": "directory" if entry.is_dir() else "file",
             }
@@ -1134,14 +1244,14 @@ def list_directory(
             if details:
                 try:
                     stat = entry.stat()
-                    info["size"] = stat.st_size
-                    info["mode"] = oct(stat.st_mode)[-3:]
-                    info["modified"] = stat.st_mtime
+                    entry_info["size"] = stat.st_size
+                    entry_info["mode"] = oct(stat.st_mode)[-3:]
+                    entry_info["modified"] = stat.st_mtime
                 except OSError:
                     # Expected for broken symlinks, inaccessible files
                     pass
 
-            entries.append(info)
+            entries.append(entry_info)
     except PermissionError:
         return [{"error": f"Permission denied: {path}"}]
     except Exception as e:
@@ -1191,7 +1301,7 @@ def find_files(
                     if len(results) >= limit:
                         return results
     except Exception as e:
-        logger.debug("Error while searching files in %s: %s", directory, e)
+        logger.debug("Error while searching files in %s: %s", path, e)
 
     return results
 
@@ -1253,7 +1363,7 @@ def check_docker_available() -> bool:
 
 def list_docker_containers(all_containers: bool = False) -> list[dict[str, str]]:
     """List Docker containers."""
-    containers = []
+    containers: list[dict[str, str]] = []
 
     if not check_docker_available():
         return containers
@@ -1282,7 +1392,7 @@ def list_docker_containers(all_containers: bool = False) -> list[dict[str, str]]
 
 def list_docker_images() -> list[dict[str, str]]:
     """List Docker images."""
-    images = []
+    images: list[dict[str, str]] = []
 
     if not check_docker_available():
         return images
@@ -1942,7 +2052,7 @@ def list_containers(all_containers: bool = False) -> list[dict[str, str]]:
     Args:
         all_containers: If True, include stopped containers
     """
-    containers = []
+    containers: list[dict[str, str]] = []
     runtime = detect_container_runtime()
 
     if not runtime:
@@ -1973,7 +2083,7 @@ def list_containers(all_containers: bool = False) -> list[dict[str, str]]:
 
 def list_container_images() -> list[dict[str, str]]:
     """List container images using Docker or Podman."""
-    images = []
+    images: list[dict[str, str]] = []
     runtime = detect_container_runtime()
 
     if not runtime:
@@ -2520,10 +2630,11 @@ def get_network_traffic() -> list[NetworkTraffic]:
     return traffic
 
 
-def format_bytes(bytes_val: int) -> str:
+def format_bytes(bytes_val: int | float) -> str:
     """Format bytes into human-readable string."""
+    val: float = float(bytes_val)
     for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if bytes_val < 1024:
-            return f"{bytes_val:.1f} {unit}"
-        bytes_val /= 1024
-    return f"{bytes_val:.1f} PB"
+        if val < 1024:
+            return f"{val:.1f} {unit}"
+        val /= 1024
+    return f"{val:.1f} PB"
