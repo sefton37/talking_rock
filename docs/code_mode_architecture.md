@@ -1,14 +1,18 @@
-# Code Mode Architecture
+# RIVA Architecture (Code Mode)
 
 ## Overview
 
-Code Mode is ReOS's agentic coding system that autonomously understands, plans, and executes code changes. This document describes the architecture, components, and the new RIVA (Recursive Intention-Verification Architecture) integration.
+**RIVA** (Recursive Intention-Verification Architecture) is Talking Rock's coding agent. It autonomously understands, plans, and executes code changes through a contract-based, test-first approach.
+
+RIVA's core kernel principle: **"If you can't verify it, decompose it."**
+
+This document describes RIVA's architecture, components, and execution flow.
 
 ## Execution Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           Code Mode Execution                            │
+│                        RIVA Execution Flow                               │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │   User Prompt                                                           │

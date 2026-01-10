@@ -1,34 +1,45 @@
-# ReOS Technical Roadmap
+# Talking Rock Technical Roadmap
 
 ## The Vision
 
-**Build the best AI coding assistant in the world. Then give it away.**
+**Build the best AI assistant in the world. Then give it away.**
 
-ReOS exists to prove that the best AI tools don't require:
+Talking Rock is a local-first AI assistant with three specialized agents:
+
+| Agent | Purpose | Kernel Principle |
+|-------|---------|------------------|
+| **CAIRN** | Attention minder & default helper | "If you can't verify coherence, decompose the demand" |
+| **ReOS** | System agent for Linux control | "Native until foreign. Foreign until confirmed." |
+| **RIVA** | Coding agent for development | "If you can't verify it, decompose it" |
+
+Talking Rock exists to prove that the best AI tools don't require:
 - Monthly subscriptions to trillion-dollar companies
 - Sending your code to someone else's servers
 - Trusting black boxes you can't inspect or modify
 - Accepting whatever "engagement-optimized" features they decide to ship
 
-ReOS is:
+Talking Rock is:
 - **Open source**: See how it works, fix bugs, add features
 - **Local-first**: Everything runs on your hardware
-- **Private**: Your code never leaves your machine
+- **Private**: Your data never leaves your machine
 - **Yours**: No subscription, no lock-in, no rent
 
 ---
 
 ## What We're Building
 
-### Two Modes, One Philosophy
+### Three Agents, One Philosophy
 
-**1. Natural Language Linux**
-Control your entire Linux system through conversation. Make the terminal accessible to everyone.
+**1. CAIRN - Attention Minder**
+Your default conversational partner. Manages The Play (your life knowledge base), routes to other agents, filters distractions through your identity.
 
-**2. Agentic Code Mode**
+**2. ReOS - System Agent**
+Natural language Linux control. Make the terminal accessible to everyone.
+
+**3. RIVA - Coding Agent**
 A full AI coding partner that rivals Cursor, Copilot, and Devin—but running locally, privately, and freely.
 
-Both share the same principles:
+All three share the same principles:
 - Transparency over magic
 - User sovereignty over engagement
 - Capability transfer over dependency
@@ -40,7 +51,7 @@ Both share the same principles:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              ReOS Architecture                               │
+│                         Talking Rock Architecture                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ┌────────────────────────────────────────────────────────────────────┐     │
@@ -69,7 +80,7 @@ Both share the same principles:
 │               │                      │                     │                 │
 │               ▼                      ▼                     ▼                 │
 │  ┌────────────────────────┐  ┌────────────────────────────────────────┐     │
-│  │      Linux Mode        │  │              Code Mode                  │     │
+│  │   ReOS (System Agent)  │  │         RIVA (Code Agent)              │     │
 │  │                        │  │                                         │     │
 │  │  ┌──────────────────┐  │  │  ┌─────────────────────────────────┐   │     │
 │  │  │   Linux Tools    │  │  │  │        Execution Loop           │   │     │
@@ -146,7 +157,7 @@ Both share the same principles:
 
 ## Current State (What's Built)
 
-### Linux Mode (Complete)
+### ReOS - System Agent (Complete)
 - [x] Natural language system control via Ollama
 - [x] Deep system understanding (containers, services, packages, processes)
 - [x] System state indexer with daily snapshots
@@ -156,7 +167,7 @@ Both share the same principles:
 - [x] Conversation persistence across sessions
 - [x] Extended reasoning system with adaptive recovery
 
-### Code Mode (Sprint 3 Complete)
+### RIVA - Coding Agent (Sprint 3 Complete)
 - [x] Repository assignment to Acts in The Play
 - [x] Automatic code vs sysadmin request routing
 - [x] Multi-source intent discovery (prompt + Play + codebase)
@@ -594,11 +605,11 @@ class DocumentationLookup:
 
 ---
 
-## What Makes ReOS Different
+## What Makes Talking Rock Different
 
 ### vs Cursor
 
-| Aspect | Cursor | ReOS |
+| Aspect | Cursor | Talking Rock |
 |--------|--------|------|
 | Pricing | $20/month | Free |
 | Privacy | Code goes to cloud | 100% local |
@@ -609,7 +620,7 @@ class DocumentationLookup:
 
 ### vs GitHub Copilot
 
-| Aspect | Copilot | ReOS |
+| Aspect | Copilot | Talking Rock |
 |--------|---------|------|
 | Pricing | $10-39/month | Free |
 | Privacy | Code processed by GitHub | 100% local |
@@ -620,7 +631,7 @@ class DocumentationLookup:
 
 ### vs Devin
 
-| Aspect | Devin | ReOS |
+| Aspect | Devin | Talking Rock |
 |--------|-------|------|
 | Pricing | $500/month | Free |
 | Privacy | Cloud-based | 100% local |
@@ -629,7 +640,7 @@ class DocumentationLookup:
 | Browser automation | Yes | Planned |
 | Long-term memory | Yes | Planned |
 
-### The ReOS Advantage
+### The Talking Rock Advantage
 
 What we can do that they can't:
 
@@ -646,9 +657,9 @@ What we can do that they can't:
 
 ### From the Charter
 
-> ReOS exists to protect, reflect, and return human attention.
+> Talking Rock exists to protect, reflect, and return human attention.
 
-Applied to Code Mode:
+Applied to RIVA (Code Mode):
 - **Protect**: Don't break things. Diff preview, backups, circuit breakers.
 - **Reflect**: Show reasoning. Inspector pane, execution streaming.
 - **Return**: Don't waste time. Get it right the first time with contracts.
@@ -663,9 +674,9 @@ Applied to Code Mode:
 ### Success Metrics
 
 **We'll know we succeeded when:**
-- Users trust ReOS enough to let it modify code
-- Users learn patterns from watching ReOS work
-- Users choose ReOS over paid alternatives
+- Users trust Talking Rock enough to let it modify code
+- Users learn patterns from watching the agents work
+- Users choose Talking Rock over paid alternatives
 - Users contribute improvements back
 
 **Anti-metrics:**
@@ -766,12 +777,12 @@ Applied to Code Mode:
 
 ## Closing
 
-ReOS isn't trying to be:
+Talking Rock isn't trying to be:
 - A startup looking for exit
 - A VC-funded growth machine
 - A data collection operation disguised as a product
 
-ReOS is:
+Talking Rock is:
 - A tool that respects its users
 - A project that believes in open source
 - A proof that the best things can be free
